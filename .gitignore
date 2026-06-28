@@ -1,2 +1,10 @@
 .env
 */.env
+.venv/
+outbox/
+__pycache__/
+*.pyc
+.pytest_cache/
+spike-artifacts/
+.ruff_cache/
+*.zip

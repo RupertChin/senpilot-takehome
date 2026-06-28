@@ -1,0 +1,39 @@
+# Senpilot Regulatory Email Agent — pinned dependencies (spec §1).
+# Python 3.11 target (3.13 compatible).
+
+# Web server
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+
+# Schemas & config
+pydantic==2.10.4
+pydantic-settings==2.7.1
+
+# Scraper
+playwright==1.49.1
+
+# Retry / backoff
+tenacity==9.0.0
+
+# Structured logging
+structlog==24.4.0
+
+# LLM
+anthropic==0.42.0
+
+# Email (AgentMail bound in phase 8; httpx is the REST fallback transport)
+httpx==0.28.1
+
+# Cloud (used only at deploy / large-file path; imported lazily)
+google-cloud-tasks==2.18.0
+google-cloud-storage==2.19.0
+
+# State store (prod; local uses InMemoryStore)
+supabase==2.11.0
+
+# Exception alerting (no-op unless SENTRY_DSN set)
+sentry-sdk==2.19.2
+
+# ── Dev / test ────────────────────────────────────────────────────────────────
+pytest==8.3.4
+pytest-asyncio==0.25.0
