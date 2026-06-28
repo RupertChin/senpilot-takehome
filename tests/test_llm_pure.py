@@ -58,7 +58,7 @@ def test_render_attach_body_has_all_facts():
     assert "Capital Expenditure Approvals within the Water category" in body
     assert "initial filing on 04/07/2025 and a final filing on 10/23/2025" in body
     assert "13 Exhibits, 5 Key Documents, 42 Other Documents, 0 Transcripts, and 0 Recordings" in body
-    assert "I downloaded 10 of the 10 Other Documents and have attached them as a ZIP." in body
+    assert "I downloaded 10 of the 42 Other Documents and have attached them as a ZIP." in body
 
 
 def test_render_link_body_states_size_and_reason():
@@ -72,7 +72,7 @@ def test_render_link_body_states_size_and_reason():
 
 def test_render_partial_body_mentions_failed():
     body = prompts.render_success_body(_scrape(downloaded=7, requested=10, failed=3), "attach", None)
-    assert "I downloaded 7 of the 10 Other Documents (3 could not be retrieved and were skipped)" in body
+    assert "I downloaded 7 of the 42 Other Documents (3 could not be retrieved and were skipped)" in body
 
 
 def test_render_tolerates_missing_metadata_fields():
@@ -101,8 +101,18 @@ def test_summary_is_valid_rejects_missing_matter_or_kn():
     s = _scrape()
     body = _full_valid_body(s)
     assert summary_is_valid(body.replace("M12205", "MXXXX"), s) is False  # no matter
-    assert summary_is_valid(body.replace("10 of the 10", "all of the"), s) is False  # no k-of-N
+    assert summary_is_valid(body.replace("10 of the 42", "all of the"), s) is False  # no k-of-N
     assert summary_is_valid("", s) is False
+
+
+def test_summary_is_valid_rejects_wrong_type_label_in_kn_sentence():
+    # The k-of-N denominator is the type total (42), and the type label must be exact: a paraphrase
+    # like "10 of the 42 other emails" must be rejected so it falls back to the deterministic body.
+    s = _scrape()
+    body = _full_valid_body(s)
+    assert "10 of the 42 Other Documents" in body  # sanity: denominator is the type total
+    drifted = body.replace("of the 42 Other Documents", "of the 42 other emails")
+    assert summary_is_valid(drifted, s) is False
 
 
 def test_summary_is_valid_rejects_invented_count():
@@ -186,7 +196,7 @@ async def test_summarize_falls_back_to_template_on_drift(monkeypatch):
     out = await llm.summarize(_scrape(), "attach", None)
     # Fell back to the deterministic §5 template.
     assert out == prompts.render_success_body(_scrape(), "attach", None)
-    assert "I downloaded 10 of the 10 Other Documents" in out
+    assert "I downloaded 10 of the 42 Other Documents" in out
 
 
 async def test_summarize_falls_back_when_model_invents_a_count(monkeypatch):

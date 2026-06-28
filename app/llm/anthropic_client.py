@@ -262,9 +262,12 @@ def summary_is_valid(
         return False
     if scrape.matter_number not in text:
         return False
-    k, n = scrape.downloaded, scrape.requested
-    # Accept "{k} of {N}" or "{k} of the {N}".
-    if not re.search(rf"\b{k}\s+of\s+(the\s+)?{n}\b", text):
+    k, n = scrape.downloaded, scrape.type_count
+    dt = scrape.requested_type or ""
+    # Require "{k} of (the) {N} {DocumentType}" — the type label must appear verbatim in this
+    # sentence so a paraphrase like "10 of 42 other emails" is rejected (→ deterministic fallback),
+    # not just the bare numbers. N is the total of that type (not the MAX_DOCUMENTS cap).
+    if not re.search(rf"\b{k}\s+of\s+(?:the\s+)?{n}\s+{re.escape(dt)}\b", text):
         return False
     # Each per-type count must appear as "{count} {TypeLabel}" — counts are authoritative facts.
     counts = scrape.metadata.counts if scrape.metadata else None
@@ -345,11 +348,12 @@ def _summary_facts(
         f"Other Documents {c.other_documents if c else 0}, Transcripts {c.transcripts if c else 0}, "
         f"Recordings {c.recordings if c else 0}\n"
         f"- downloaded k: {scrape.downloaded}\n"
-        f"- requested N: {scrape.requested}\n"
-        f"- document_type: {scrape.requested_type}\n"
+        f"- total of this type N: {scrape.type_count}\n"
+        f"- document_type (use this exact label, never substitute): {scrape.requested_type}\n"
         f"- failed (skipped): {scrape.failed}\n"
         f"Append this delivery sentence verbatim at the end: \"{delivery_clause}\"\n"
-        "If failed > 0, phrase the download line as "
-        f"\"{scrape.downloaded} of the {scrape.requested} {scrape.requested_type} "
-        f"({scrape.failed} could not be retrieved and were skipped)\"."
+        "Phrase the download line EXACTLY as "
+        f"\"{scrape.downloaded} of the {scrape.type_count} {scrape.requested_type}"
+        + (f" ({scrape.failed} could not be retrieved and were skipped)" if scrape.failed else "")
+        + "\"."
     )
