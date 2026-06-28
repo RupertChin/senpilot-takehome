@@ -17,13 +17,15 @@ summary. Robustness, observability, and a clean deploy are first-class requireme
 These were chosen to remove ambiguity. They are provisionally fixed; if the human overrides one,
 adjust the affected module only.
 
-1. **State store = Supabase (hosted Postgres).** Chosen for lowest setup friction given existing
-   fluency: point both local and prod at the same hosted instance (no emulator, no local infra),
-   one table covers idempotency + jobs + thread-context, and the idempotency gate is a one-line
-   `INSERT ... ON CONFLICT DO NOTHING RETURNING`. *Alternatives considered and rejected:* Firestore
-   (GCP-native, no separate vendor — but less familiar and an emulator for local); SQLite (least
-   setup, but does not survive Cloud Run cold starts, which would make the thread-follow-up feature
-   flaky). Record in the README decision log.
+1. **State store = Supabase (hosted Postgres) in prod; `InMemoryStore` (dicts) locally.** Chosen
+   for lowest setup friction given existing fluency: one table covers idempotency + jobs +
+   thread-context, and the idempotency gate is a one-line `INSERT ... ON CONFLICT DO NOTHING
+   RETURNING`. Both back the same `Store` interface, so idempotency and the thread-follow-up feature
+   are built and tested locally with **no database**, and Supabase is a pure adapter swap before
+   deploy (build order §11). *Alternatives considered and rejected:* Firestore (GCP-native, no
+   separate vendor — but less familiar and an emulator for local); SQLite (least setup, but does not
+   survive Cloud Run cold starts, which would make thread-follow-up flaky). Record in the README
+   decision log.
 2. **"Document" = one grid row.** Each selected document contributes **all** file-buttons in its
    "Download Files" modal to the zip. The **≤10 limit counts documents (rows)**, not files. The
    summary reports document (row) counts, matching the site's tab counts.
@@ -86,7 +88,8 @@ app/
     packager.py           # stream downloads -> on-disk zip; size check; GCS upload + signed URL (§7.7)
   store/
     base.py               # Store ABC: idempotency + thread context (§7.9)
-    supabase_store.py     # Supabase (Postgres) impl
+    memory_store.py       # InMemoryStore — local default (dicts); backs both store uses
+    supabase_store.py     # SupabaseStore — prod impl (Postgres); same interface, pure swap
   queue/
     tasks.py              # enqueue() via Cloud Tasks; inline dispatch (§7.10)
 Dockerfile
@@ -144,6 +147,7 @@ code inside `email/agentmail.py`, GCP-specific code inside `store/`, `package/`,
 | logs | pretty console | JSON to stdout |
 | Playwright trace | always | on failure only |
 | email client | `FileEmailClient` (→ `./outbox/`) | `AgentMailClient` |
+| store | `InMemoryStore` (dicts) | `SupabaseStore` (Postgres) |
 | queue_mode default | `inline` | `tasks` |
 | sentry | off | on (if DSN) |
 
@@ -467,12 +471,22 @@ class Store(ABC):
     async def get_thread(self, thread_id: str) -> ThreadContext | None
     async def upsert_thread(self, ctx: ThreadContext) -> None
 ```
-- `claim_message`: Supabase/Postgres — `INSERT INTO idempotency(message_id) VALUES ($1) ON
-  CONFLICT (message_id) DO NOTHING RETURNING message_id`. A returned row = newly claimed (process
-  it); no row = already seen (skip). One statement, atomic — handles AgentMail + Cloud Tasks
-  retries. (Schema: a single `idempotency` table with a `message_id` PK; `jobs` and `threads`
-  tables for the other two records, or fold all three into one table with a `kind` column — your
-  call, it's three trivial keyed rows.)
+
+Two implementations behind this one interface; **selected by `ENV`** (local → `InMemoryStore`,
+prod → `SupabaseStore`). Both back *both* store uses — idempotency and thread context — so the
+idempotency logic and the thread-follow-up feature are built and fully tested locally with no
+database; provisioning Supabase is a pure adapter swap before deploy (see build order §11).
+
+- **`InMemoryStore` (local default):** plain dicts — one keyed by `message_id` (jobs/idempotency),
+  one keyed by `thread_id` (thread context). `claim_message` = check-and-set on the dict (atomic
+  enough for single-process local dev). Not durable across restarts — fine for the dev loop, and
+  enough to exercise the thread feature's logic (inherit-on-null, explicit-overrides-inherited).
+- **`SupabaseStore` (prod):** `claim_message` = `INSERT INTO jobs (message_id, status, inbound)
+  VALUES ($1,'processing',$2) ON CONFLICT (message_id) DO NOTHING RETURNING job_id`. A returned row
+  = newly claimed (process it); no row = already seen (skip). One atomic statement — the
+  `UNIQUE(message_id)` on `jobs` is the idempotency gate (no separate idempotency table needed),
+  handling AgentMail + Cloud Tasks retries. Thread context via the `threads` upsert. (Tables in
+  `schema.sql`.)
 - Thread context keyed by `thread_id`. `get_thread` used during extraction to inherit a null
   `matter_number`/`document_type`; **explicit value in the current email always overrides inherited**
   (set `inherited_*` flags for logging). `upsert_thread` after a successful scrape.
@@ -530,8 +544,8 @@ class Store(ABC):
 - **Cloud Tasks:** one queue (`tasks_queue` in `tasks_location`), `max_concurrent_dispatches = 3`.
 - **GCS:** one bucket (`gcs_bucket`), uniform access; objects under `jobs/` with a lifecycle rule
   to auto-delete after a few days (align with `signed_url_ttl_hours` so links don't outlive files).
-- **Supabase:** one project; create the `idempotency` (+ `jobs`/`threads`) table(s); put the URL +
-  service-role key in env. Local and prod point at the same instance — no emulator.
+- **Supabase:** one project; apply `schema.sql` (`jobs` + `threads`; `jobs.message_id` UNIQUE is the
+  idempotency gate); put the URL + service-role key in env. No emulator — local used `InMemoryStore`.
 - **Secrets:** API keys + webhook secret + Supabase key via Secret Manager → env.
 - **AgentMail:** point its inbound webhook at `{service}/inbound`; set the signing secret.
 
@@ -540,20 +554,35 @@ class Store(ABC):
 ## 11. Build order (phased; each phase independently testable)
 
 1. **Scaffold** — `config.py`, `models.py`, `observability.py`, FastAPI app with `/health`, the
-   `EmailClient`/`LLM`/`Store` interfaces + `FileEmailClient` and a stub store. `QUEUE_MODE=inline`.
+   `EmailClient`/`LLM`/`Store` interfaces + `FileEmailClient` and a working **`InMemoryStore`** (not
+   a stub — real dicts, backs idempotency + thread context). `QUEUE_MODE=inline`. No external
+   accounts needed yet.
 2. **Scraper** (highest risk — do early) — `browser.py`, `selectors.py`, `scraper.py`. Validate live
    against **M12205** (see §12). This is mostly transcription of the confirmed mechanics + the retry
    wrapper and multi-file/virtualization handling.
 3. **LLM** — classify/extract/summarize + prompts; unit-test extraction/clarification on crafted
    emails.
 4. **Pipeline inline** — wire `process_job` end to end with `FileEmailClient` (replies land in
-   `./outbox/`); exercise the full flow locally.
-5. **Packager** — streaming zip + size branch + GCS link; unit-test the threshold.
-6. **Store (Supabase) + idempotency + thread-context follow-up.**
-7. **AgentMailClient** — bind inbound parse + send-with-attachment; signature verification.
-8. **Cloud Tasks + deploy** — `queue/tasks.py`, `/process` with OIDC, Dockerfile, Cloud Run +
-   queue + bucket + Supabase; flip `QUEUE_MODE=tasks`; live email test. *If time-constrained, ship
-   `inline` — it already works end to end.*
+   `./outbox/`); exercise the full happy path locally.
+5. **Robustness** — backoff/retries, **idempotency wired against the in-memory store**, failure
+   email, JSON logging + correlation id, trace-on-failure, Sentry. Plus the **packager** (streaming
+   zip + threshold branch + GCS link; unit-test the threshold — the GCS upload can be stubbed
+   locally until deploy).
+6. **Thread-context follow-up feature** — inherit-on-null + explicit-overrides-inherited, persisted
+   via the **in-memory store**. *Built and tested fully here — no database required.* This is the
+   differentiator; it lands once the core pipeline is solid, not gated on provisioning.
+7. **Supabase adapter + provisioning** — implement `SupabaseStore` against the same `Store`
+   interface, create the project, apply `schema.sql`, flip the store via `ENV`/config. A pure swap —
+   zero feature-logic change.
+8. **AgentMailClient + Cloud Tasks + deploy** — bind AgentMail inbound parse + send + signature
+   verification; `queue/tasks.py`, `/process` with OIDC, Dockerfile, Cloud Run + queue + bucket;
+   flip `QUEUE_MODE=tasks`; live email test. *If time-constrained, ship `inline` — it already works
+   end to end.*
+9. **Flex** — conversational acks, in cut order.
+
+> The whole system — thread-reply included — is buildable and demoable locally through phase 6 with
+> only Anthropic + AgentMail credentials (and AgentMail only when you wire real inbound in phase 8;
+> earlier phases use `FileEmailClient`). Supabase and GCP are deferred to phases 7–8.
 
 ---
 

@@ -20,9 +20,11 @@ You are building the **Senpilot Regulatory Email Agent**. Read this first, then 
    two-step "Go Get It" → modal → file-button download; the **empty-tab "No Matching Records" modal
    guard** (dismiss before every tab/download action); virtualized-list scroll-collect-dedupe to
    reach up to 10 documents.
-4. **Local dev needs no GCP.** Run with `ENV=local`, `QUEUE_MODE=inline`, and `FileEmailClient`
-   (replies are written to `./outbox/`). Cloud Tasks is skipped in inline mode; the GCS large-file
-   path may be stubbed until deploy. The whole flow is testable locally end to end.
+4. **Local dev needs no external database or GCP.** Run with `ENV=local`, `QUEUE_MODE=inline`,
+   `FileEmailClient` (replies → `./outbox/`), and the **`InMemoryStore`** (dicts). Cloud Tasks is
+   skipped in inline mode; the GCS large-file path may be stubbed; Supabase is deferred to phase 7
+   (a pure adapter swap). The whole flow — thread-reply included — is testable locally through
+   phase 6 with only Anthropic credentials (AgentMail only when you wire real inbound in phase 8).
 5. **Bind AgentMail against its live docs — do not guess its API.** It is niche; your training data
    will be wrong. Read `https://docs.agentmail.to/llms-full.txt` (or the SDK) for `messages.send`,
    attachments, webhook payloads, and signature verification. Map them onto the `EmailClient`
@@ -44,8 +46,9 @@ playwright install chromium
 cp .env.example .env        # fill ANTHROPIC, AGENTMAIL, SUPABASE values
 uvicorn app.main:app --reload
 ```
-Secrets live in `.env` (never commit it). `.env.example` lists every variable. Apply `schema.sql`
-to your Supabase project for the store tables.
+Secrets live in `.env` (never commit it). `.env.example` lists every variable. At phase 7, apply
+`schema.sql` to your Supabase project and switch `ENV`/store config; before that, the in-memory
+store needs no setup.
 
 ## Definition of done (local)
 Scraper passes the M12205 oracle; an `InboundEmail` fixture run through `process_job` with
