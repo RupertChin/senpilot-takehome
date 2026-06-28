@@ -66,7 +66,8 @@ def test_tunable_defaults_match_spec(monkeypatch):
     monkeypatch.delenv("K_SERVICE", raising=False)
     s = Settings(_env_file=None)
     assert s.max_documents == 10
-    assert s.attach_threshold_bytes == 18_000_000
+    assert s.attach_threshold_bytes == 6_000_000
+    assert s.max_attachment_bytes == 25_000_000
     assert s.signed_url_ttl_hours == 72
     assert s.polite_delay_s == 0.6
     assert s.download_timeout_s == 90

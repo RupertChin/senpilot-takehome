@@ -75,7 +75,12 @@ class Settings(BaseSettings):
 
     # ── Tunables ──────────────────────────────────────────────────────────────
     max_documents: int = 10
-    attach_threshold_bytes: int = 18_000_000
+    # Delivery tiers (spec §7.7): raw zip ≤ attach_threshold → inline base64 attachment (kept small
+    # because AgentMail's API request body is gateway-capped ~10MB → ~7MB raw after base64); above
+    # that and ≤ max_attachment → upload to GCS and attach BY URL (AgentMail fetches it server-side,
+    # no base64 in the request); above max_attachment → GCS signed link in the body.
+    attach_threshold_bytes: int = 6_000_000
+    max_attachment_bytes: int = 25_000_000
     signed_url_ttl_hours: int = 72
     polite_delay_s: float = 0.6
     download_timeout_s: int = 90  # per-file download budget (start + byte transfer), in seconds

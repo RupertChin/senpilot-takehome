@@ -57,6 +57,8 @@ class FileEmailClient(EmailClient):
         in_reply_to: InboundEmail,
         body: str,
         attachment_path: str | None = None,
+        attachment_url: str | None = None,
+        attachment_filename: str | None = None,
     ) -> None:
         """Write the reply (and any attachment) to ``./outbox/``."""
         # Include the message id in the stem so a burst of replies to the same sender within the
@@ -71,6 +73,12 @@ class FileEmailClient(EmailClient):
             dest = self.outbox / f"{stem}_{_safe(src.name)}"
             shutil.copyfile(src, dest)
             attachment_note = f"X-Attachment: {dest.name}\n"
+        elif attachment_url:
+            # Mirrors the prod url-attach path: record the fetch URL + intended filename.
+            attachment_note = (
+                f"X-Attachment-Url: {attachment_url}\n"
+                f"X-Attachment-Filename: {attachment_filename or 'documents.zip'}\n"
+            )
 
         # A minimal .eml-style record: headers that preserve threading + the body.
         headers = (

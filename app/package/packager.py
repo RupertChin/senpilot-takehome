@@ -41,11 +41,13 @@ async def package(
     settings: Settings,
     uploader: Uploader | None = None,
 ) -> tuple[str, str, int]:
-    """Build the zip and decide delivery (spec §7.7).
+    """Build the zip and decide delivery (spec §7.7). Three tiers, by raw zip size:
 
-    Returns ``(delivery, payload, raw_zip_bytes)``: ``("attach", zip_path, size)`` when the raw zip
-    is ≤ the (base64-aware) threshold; otherwise ``("link", signed_url, size)`` after uploading —
-    the caller uses ``size`` for the §5 "It's {size}MB — too large to attach" wording.
+    - ``size ≤ attach_threshold``        → ``("attach", zip_path, size)`` — inline base64.
+    - ``attach_threshold < size ≤ max``  → ``("url_attach", signed_url, size)`` — GCS upload, then
+      AgentMail attaches it BY URL (fetched server-side; no base64 in our request → no 413).
+    - ``size > max_attachment``          → ``("link", signed_url, size)`` — GCS link in the body
+      (too big to ride in an email); the caller uses ``size`` for the "It's {size}MB" wording.
     """
     out_dir = Path(os.environ.get("TMPDIR", "/tmp"))
     zip_path = out_dir / f"{job_id}.zip"
@@ -78,15 +80,22 @@ async def package(
     if size <= settings.attach_threshold_bytes:
         return ("attach", str(zip_path), size)
 
-    # Oversized: upload + mint a time-limited link (states the size reason in the reply).
+    # Above the base64-inline cap: upload once and mint a time-limited V4 signed URL. Whether the
+    # user gets a real attachment (url_attach) or a body link depends only on the email size cap.
     uploader = uploader or build_uploader(settings)
     url = await uploader.upload_and_sign(
         str(zip_path), key=f"jobs/{job_id}.zip", ttl_hours=settings.signed_url_ttl_hours
     )
-    # The local zip is now redundant (the user fetches it from the link); remove it.
+    # The local zip is now redundant (AgentMail fetches the object, or the user does via the link).
     try:
         zip_path.unlink()
     except OSError:
         pass
+
+    if size <= settings.max_attachment_bytes:
+        # AgentMail attaches it by URL (server-side fetch) — a real attachment, no base64 in-request.
+        log.info("packaged_url_attach", job_id=job_id, zip_bytes=size)
+        return ("url_attach", url, size)
+
     log.info("packaged_link", job_id=job_id, zip_bytes=size)
     return ("link", url, size)

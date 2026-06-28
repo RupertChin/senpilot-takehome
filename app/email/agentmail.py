@@ -105,15 +105,30 @@ class AgentMailClient(EmailClient):
         in_reply_to: InboundEmail,
         body: str,
         attachment_path: str | None = None,
+        attachment_url: str | None = None,
+        attachment_filename: str | None = None,
     ) -> None:
         attachments = None
         if attachment_path:
+            # Inline base64 — only for small files (the request body is gateway-capped; large base64
+            # bodies are rejected 413, which is why bigger zips use the url path below instead).
             data = Path(attachment_path).read_bytes()
             attachments = [
                 SendAttachment(
                     filename=Path(attachment_path).name,
                     content_type="application/zip",
                     content=base64.b64encode(data).decode(),
+                    content_disposition="attachment",
+                )
+            ]
+        elif attachment_url:
+            # AgentMail fetches the URL server-side and attaches the real file — no base64 in our
+            # request, so this carries large zips (up to the email size limit) without a 413.
+            attachments = [
+                SendAttachment(
+                    filename=attachment_filename or "documents.zip",
+                    content_type="application/zip",
+                    url=attachment_url,
                     content_disposition="attachment",
                 )
             ]
@@ -132,7 +147,7 @@ class AgentMailClient(EmailClient):
         log.info(
             "agentmail_reply_sent",
             message_id=in_reply_to.message_id,
-            attachment=bool(attachment_path),
+            attachment="inline" if attachment_path else ("url" if attachment_url else None),
         )
 
 

@@ -373,7 +373,8 @@ async def test_tasks_mode_reraises_for_cloud_tasks_retry(tmp_path, monkeypatch):
 
 
 async def test_link_branch_states_size_and_reason(tmp_path, monkeypatch):
-    # Force the link branch (tiny threshold) and assert the summary path uses link + size.
+    # Force the link branch (both caps tiny -> over max_attachment) and assert the summary path
+    # uses link + size.
     src = tmp_path / "dl"
     src.mkdir()
     p = src / "big.pdf"
@@ -406,13 +407,59 @@ async def test_link_branch_states_size_and_reason(tmp_path, monkeypatch):
         store=InMemoryStore(),
         email=FileEmailClient(outbox_dir=tmp_path / "out"),
         llm=_LinkLLM(),
-        settings=Settings(attach_threshold_bytes=10, _env_file=None),
+        # Both caps tiny -> the zip exceeds max_attachment -> body-link branch.
+        settings=Settings(attach_threshold_bytes=10, max_attachment_bytes=10, _env_file=None),
     )
     await _run(deps, _inbound())
     assert captured["delivery"] == "link"
     assert captured["link"].startswith("https://storage.local.stub/")
     assert captured["size_mb"] is not None and captured["size_mb"] > 0
     assert captured["ttl"] == 72
-    # No attachment on the link branch.
+    # No file attachment on the link branch.
     eml = list((tmp_path / "out").glob("*.eml"))[0].read_text()
     assert "X-Attachment:" not in eml
+
+
+async def test_url_attach_branch_delivers_attachment_by_url(tmp_path, monkeypatch):
+    # Over the inline cap but under max_attachment -> the file is uploaded and attached BY URL,
+    # the summary reads as a normal attachment ("attach"), and no link is surfaced in the body.
+    src = tmp_path / "dl"
+    src.mkdir()
+    p = src / "big.pdf"
+    p.write_bytes(b"%PDF-1.7 " + bytes(1000))
+    doc = DownloadedDoc(doc_no="big", filenames=[p.name], paths=[str(p)], total_bytes=p.stat().st_size)
+
+    async def fake_scrape(matter, doc_type, *, settings, extract_metadata):
+        return ScrapeResult(
+            matter_number=matter, found=True, metadata=_metadata(), requested_type=doc_type,
+            type_count=42, documents=[doc], requested=1, downloaded=1, failed=0,
+        )
+
+    captured = {}
+
+    class _CapLLM(FakeLLM):
+        async def summarize(self, scrape, delivery, link, *, link_size_mb=None, link_ttl_hours=None):
+            captured.update(delivery=delivery, link=link)
+            return "here are your docs"
+
+    sent = {}
+
+    class _CapEmail(FileEmailClient):
+        async def send_reply(self, *, in_reply_to, body, attachment_path=None,
+                             attachment_url=None, attachment_filename=None):
+            sent.update(path=attachment_path, url=attachment_url, filename=attachment_filename)
+
+    monkeypatch.setenv("TMPDIR", str(tmp_path))
+    monkeypatch.setattr("app.pipeline.scrape_matter", fake_scrape)
+    deps = PipelineDeps(
+        store=InMemoryStore(),
+        email=_CapEmail(outbox_dir=tmp_path / "out"),
+        llm=_CapLLM(),
+        # Inline cap tiny, max_attachment large -> url_attach branch.
+        settings=Settings(attach_threshold_bytes=10, max_attachment_bytes=25_000_000, _env_file=None),
+    )
+    await _run(deps, _inbound())
+    assert captured["delivery"] == "attach" and captured["link"] is None  # reads as an attachment
+    assert sent["path"] is None
+    assert sent["url"].startswith("https://storage.local.stub/")
+    assert sent["filename"].endswith(".zip") and " " not in sent["filename"]

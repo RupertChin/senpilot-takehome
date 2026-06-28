@@ -27,8 +27,15 @@ class EmailClient(ABC):
         in_reply_to: InboundEmail,
         body: str,
         attachment_path: str | None = None,
+        attachment_url: str | None = None,
+        attachment_filename: str | None = None,
     ) -> None:
-        """Send a reply in-thread (preserving threading), optionally with one attachment."""
+        """Send a reply in-thread, optionally with one attachment.
+
+        The attachment is supplied EITHER as a local ``attachment_path`` (sent inline) or as an
+        ``attachment_url`` (the provider fetches it server-side and attaches it, with
+        ``attachment_filename`` as its name) — never both.
+        """
         ...
 
     def verify_signature(self, raw_body: bytes, headers) -> bool:

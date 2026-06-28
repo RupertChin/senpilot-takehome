@@ -61,18 +61,34 @@ async def test_package_skips_missing_source(tmp_path, monkeypatch):
         assert zf.namelist() == []  # missing source skipped, empty (valid) zip
 
 
-async def test_package_over_threshold_returns_link(tmp_path, monkeypatch):
+async def test_package_over_inline_cap_returns_url_attach(tmp_path, monkeypatch):
+    # Over the base64-inline cap but under max_attachment -> upload + attach BY URL.
     monkeypatch.setenv("TMPDIR", str(tmp_path))
-    monkeypatch.setenv("ATTACH_THRESHOLD_BYTES", "10")  # force the link branch
+    monkeypatch.setenv("ATTACH_THRESHOLD_BYTES", "10")
     f = tmp_path / "big.pdf"
     f.write_bytes(b"%PDF-1.7 " + bytes(500))
     docs = [DownloadedDoc(doc_no="B", filenames=["big.pdf"], paths=[str(f)], total_bytes=f.stat().st_size)]
     uploader = LocalStubUploader(base_dir=tmp_path / "gcs")
     delivery, url, size = await package(docs, "job-z", Settings(_env_file=None), uploader=uploader)
-    assert delivery == "link"
+    assert delivery == "url_attach"
     assert url.startswith("https://storage.local.stub/jobs/job-z.zip")
     assert size > 10
-    # The local zip is removed after upload (the user fetches it from the link).
+    # The local zip is removed after upload (AgentMail fetches the object by URL).
     assert not (tmp_path / "job-z.zip").exists()
-    # The stub "uploaded" a copy.
-    assert list((tmp_path / "gcs").glob("*")) != []
+    assert list((tmp_path / "gcs").glob("*")) != []  # the stub "uploaded" a copy
+
+
+async def test_package_over_max_returns_link(tmp_path, monkeypatch):
+    # Over max_attachment (too big to ride in an email) -> upload + body link.
+    monkeypatch.setenv("TMPDIR", str(tmp_path))
+    monkeypatch.setenv("ATTACH_THRESHOLD_BYTES", "10")
+    monkeypatch.setenv("MAX_ATTACHMENT_BYTES", "10")
+    f = tmp_path / "huge.pdf"
+    f.write_bytes(b"%PDF-1.7 " + bytes(500))
+    docs = [DownloadedDoc(doc_no="H", filenames=["huge.pdf"], paths=[str(f)], total_bytes=f.stat().st_size)]
+    uploader = LocalStubUploader(base_dir=tmp_path / "gcs")
+    delivery, url, size = await package(docs, "job-w", Settings(_env_file=None), uploader=uploader)
+    assert delivery == "link"
+    assert url.startswith("https://storage.local.stub/jobs/job-w.zip")
+    assert size > 10
+    assert not (tmp_path / "job-w.zip").exists()

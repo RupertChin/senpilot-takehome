@@ -149,6 +149,33 @@ async def test_send_reply_builds_attachment(monkeypatch, tmp_path):
     assert base64.b64decode(att.content) == b"PK\x03\x04 zip-bytes"
 
 
+async def test_send_reply_attaches_by_url(monkeypatch):
+    # The url-attach path: no base64 content, just a url the provider fetches server-side.
+    client = AgentMailClient(_settings())
+    captured = {}
+
+    async def fake_reply(*, inbox_id, message_id, text, attachments):
+        captured["attachments"] = attachments
+
+    monkeypatch.setattr(client.client.inboxes.messages, "reply", fake_reply)
+    inbound = InboundEmail(
+        message_id="msg_2", thread_id="thd_2", from_addr="jane@example.com",
+        to_addr="agent@agentmail.to", subject="docs", body_text="hi",
+        received_at=datetime(2026, 6, 28, tzinfo=timezone.utc),
+    )
+    await client.send_reply(
+        in_reply_to=inbound,
+        body="Here you go.",
+        attachment_url="https://storage.googleapis.com/bucket/jobs/abc.zip?sig=x",
+        attachment_filename="M12205_Other_Documents.zip",
+    )
+    att = captured["attachments"][0]
+    assert att.url == "https://storage.googleapis.com/bucket/jobs/abc.zip?sig=x"
+    assert att.filename == "M12205_Other_Documents.zip"
+    assert att.content_type == "application/zip"
+    assert att.content is None  # no inline base64 — the whole point of the url path
+
+
 async def test_send_reply_no_attachment(monkeypatch):
     client = AgentMailClient(_settings())
     captured = {}

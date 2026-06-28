@@ -131,16 +131,26 @@ async def process_job(message_id: str, *, deps: PipelineDeps) -> None:
             delivery, payload, size = await package(scrape.documents, job.job_id, settings)
             if delivery == "attach":
                 cleanup.append(Path(payload))
-            link = payload if delivery == "link" else None
+            # "attach" and "url_attach" both deliver a real attachment (inline vs fetched-by-URL);
+            # only "link" puts the file behind a link in the body.
+            is_link = delivery == "link"
+            link = payload if is_link else None
             body = await llm.summarize(
                 scrape,
-                delivery,
+                "link" if is_link else "attach",
                 link,
-                link_size_mb=(size / 1_000_000) if delivery == "link" else None,
-                link_ttl_hours=settings.signed_url_ttl_hours if delivery == "link" else None,
+                link_size_mb=(size / 1_000_000) if is_link else None,
+                link_ttl_hours=settings.signed_url_ttl_hours if is_link else None,
             )
             await _reply(
-                deps, inbound, body, attachment_path=payload if delivery == "attach" else None
+                deps,
+                inbound,
+                body,
+                attachment_path=payload if delivery == "attach" else None,
+                attachment_url=payload if delivery == "url_attach" else None,
+                attachment_filename=f"{matter}_{doc_type}.zip".replace(" ", "_")
+                if delivery == "url_attach"
+                else None,
             )
             outbound_sent = True
 
@@ -263,7 +273,13 @@ async def _upsert_thread(
         log.warning("thread_upsert_failed", thread_id=thread_id, exc_info=True)
 
 
-async def _reply(deps, inbound, body, attachment_path=None) -> None:
+async def _reply(
+    deps, inbound, body, attachment_path=None, attachment_url=None, attachment_filename=None
+) -> None:
     await deps.email.send_reply(
-        in_reply_to=inbound, body=body, attachment_path=attachment_path
+        in_reply_to=inbound,
+        body=body,
+        attachment_path=attachment_path,
+        attachment_url=attachment_url,
+        attachment_filename=attachment_filename,
     )
