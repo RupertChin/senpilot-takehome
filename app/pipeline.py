@@ -15,13 +15,14 @@ from __future__ import annotations
 
 import shutil
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 
 from app.config import Settings, get_settings
 from app.email.base import EmailClient
 from app.errors import RetryableError, TerminalError, classify_exception
 from app.llm.base import LLM
-from app.models import DocCounts
+from app.models import DocCounts, ParsedRequest, ThreadContext
 from app.observability import get_logger, init_sentry, job_context
 from app.package.packager import package
 from app.replies import clarification, empty_type, failure, matter_not_found
@@ -78,7 +79,7 @@ async def process_job(message_id: str, *, deps: PipelineDeps) -> None:
 
             # ── extract + validate ────────────────────────────────────────────
             parsed = await llm.extract(inbound)
-            # TODO(Stage 8): merge thread context (inherit matter/type when null).
+            parsed = await _merge_thread_context(deps, inbound.thread_id, parsed)
             if parsed.matter_number is None or parsed.document_type is None:
                 await _reply(
                     deps,
@@ -112,6 +113,8 @@ async def process_job(message_id: str, *, deps: PipelineDeps) -> None:
                 counts = scrape.metadata.counts if scrape.metadata else DocCounts()
                 await _reply(deps, inbound, empty_type(matter, doc_type, counts))
                 outbound_sent = True
+                # The matter is valid — remember it so a follow-up ("then the Exhibits") inherits it.
+                await _upsert_thread(deps, inbound.thread_id, matter, doc_type)
                 await deps.store.set_status(job.job_id, "done")
                 return
             if scrape.downloaded == 0:
@@ -138,7 +141,8 @@ async def process_job(message_id: str, *, deps: PipelineDeps) -> None:
             )
             outbound_sent = True
 
-            # TODO(Stage 8): upsert thread context after a successful scrape.
+            # Remember this matter+type for follow-ups in the same thread (§7.9).
+            await _upsert_thread(deps, inbound.thread_id, matter, doc_type)
             await deps.store.set_status(job.job_id, "done")
             log.info(
                 "job_done",
@@ -191,6 +195,69 @@ def _cleanup(paths: list[Path]) -> None:
                 p.unlink()
         except OSError:  # pragma: no cover — cleanup is best-effort
             pass
+
+
+async def _merge_thread_context(
+    deps: PipelineDeps, thread_id: str | None, parsed: ParsedRequest
+) -> ParsedRequest:
+    """Inherit a null matter/type from the thread's last request (spec §7.9).
+
+    Explicit values in the current email ALWAYS win — inheritance fills only the null fields. Sets
+    the ``inherited_*`` flags for logging. No-op when there's no thread or no stored context.
+    """
+    if thread_id is None:
+        return parsed
+    ctx = await deps.store.get_thread(thread_id)
+    if ctx is None:
+        return parsed
+
+    matter = parsed.matter_number
+    doc_type = parsed.document_type
+    inherited_matter = inherited_type = False
+    if matter is None and ctx.last_matter_number is not None:
+        matter = ctx.last_matter_number
+        inherited_matter = True
+    if doc_type is None and ctx.last_document_type is not None:
+        doc_type = ctx.last_document_type
+        inherited_type = True
+
+    if inherited_matter or inherited_type:
+        log.info(
+            "thread_context_inherited",
+            thread_id=thread_id,
+            inherited_matter=inherited_matter,
+            inherited_type=inherited_type,
+        )
+    return ParsedRequest(
+        matter_number=matter,
+        document_type=doc_type,
+        inherited_matter=inherited_matter,
+        inherited_type=inherited_type,
+    )
+
+
+async def _upsert_thread(
+    deps: PipelineDeps, thread_id: str | None, matter: str, doc_type: str
+) -> None:
+    """Persist the matter+type as this thread's last request, for future follow-ups (§7.9).
+
+    Best-effort: this runs AFTER the user reply has already been sent, so a store hiccup must never
+    fail the job (which, in tasks mode, would retry and re-send the documents). Remembering the
+    thread is a convenience, not a delivery guarantee — log and move on if it fails.
+    """
+    if thread_id is None:
+        return
+    try:
+        await deps.store.upsert_thread(
+            ThreadContext(
+                thread_id=thread_id,
+                last_matter_number=matter,
+                last_document_type=doc_type,
+                updated_at=datetime.now(timezone.utc),
+            )
+        )
+    except Exception:  # noqa: BLE001 — never fail a delivered job on thread bookkeeping
+        log.warning("thread_upsert_failed", thread_id=thread_id, exc_info=True)
 
 
 async def _reply(deps, inbound, body, attachment_path=None) -> None:
