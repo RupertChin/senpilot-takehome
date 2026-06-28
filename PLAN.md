@@ -166,7 +166,7 @@ request their specific credential.
 - [x] Stage 2 — Interfaces + local adapters + FastAPI (61 tests; review: no blocking)
 - [x] Stage 3 — Scraper: navigate/search/metadata/counts (live M12205 oracle PASS; 68 offline tests; review: 1 blocking fixed)
 - [x] Stage 4 — Scraper: download loop + guards (live M12205: 10 distinct docs + empty-tab; 79 offline tests; review: 1 blocking fixed)
-- [ ] Stage 5 — LLM
+- [x] Stage 5 — LLM (live Anthropic 8/8; 103 offline; review: no blocking)
 - [ ] Stage 6 — Pipeline inline happy path
 - [ ] Stage 7 — Packager + robustness
 - [ ] Stage 8 — Thread-context follow-up

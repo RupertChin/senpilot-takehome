@@ -39,6 +39,14 @@ class LLM(ABC):
         scrape: ScrapeResult,
         delivery: Literal["attach", "link"],
         link: str | None,
+        *,
+        link_size_mb: float | None = None,
+        link_ttl_hours: int | None = None,
     ) -> str:
-        """Compose the §5 success/partial body. Exact numbers from ``scrape`` must be preserved."""
+        """Compose the §5 success/partial body. Exact numbers from ``scrape`` must be preserved.
+
+        ``link_size_mb``/``link_ttl_hours`` supply the §5 link-branch wording ("It's {size}MB …
+        expires in {ttl}h"); they're optional kwargs because the bare (scrape, delivery, link)
+        signature can't carry them. A minor interface refinement, not a §0/§6 change.
+        """
         ...
