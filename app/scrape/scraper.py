@@ -24,6 +24,7 @@ The download loop (``download_type``) and its mandatory guards (Stage 4):
 
 from __future__ import annotations
 
+import asyncio
 import tempfile
 import time
 from pathlib import Path
@@ -472,32 +473,22 @@ class UARBScraper:
             # never let a downloaded filename escape the temp dir.
             safe = Path(suggested).name or f"{doc_no}_{j}.bin"
             dest = tmp_dir / f"{doc_no}__{safe}"
-            await d.save_as(str(dest))
+            # Bound the byte transfer: save_as has no timeout of its own, so a server that stalls
+            # mid-stream would hang the job forever. The budget is generous (90s) to allow a slow
+            # large file (one Exhibit was 48 MB); a transfer that exceeds it is abandoned and the
+            # per-file retry tries again, then the doc is skipped+counted (never an infinite hang).
+            await asyncio.wait_for(
+                d.save_as(str(dest)), timeout=selectors.DOWNLOAD_TIMEOUT_MS / 1000
+            )
             return dest.name, str(dest), dest.stat().st_size
 
         return await download_with_retries(
             doc_no,
             n_files,
             _fetch,
-            retry_exceptions=(PWTimeout, OSError),
+            # asyncio.TimeoutError = a stalled byte transfer (the save_as bound) — retry it.
+            retry_exceptions=(PWTimeout, OSError, asyncio.TimeoutError),
         )
-
-    async def _apply_pdf_filter(self) -> None:
-        """Best-effort: click the "PDF Only" filter before the loop (spec §7.6).
-
-        Non-PDF types exist in the broader corpus; the filter narrows to expected files. Guarded —
-        if the control isn't present (or its label changed) the loop still works (the validated
-        spike ran without it), so a miss here is logged, not fatal.
-        """
-        try:
-            btn = self.page.get_by_role("button", name="PDF Only", exact=False)
-            if await btn.count() > 0 and await btn.first.is_visible():
-                await btn.first.click()
-                await self.page.wait_for_timeout(400)
-                await self.dismiss_modal()
-                log.info("pdf_filter_applied")
-        except Exception as exc:  # noqa: BLE001
-            log.warning("pdf_filter_skipped", error=_short_error(exc))
 
     async def download_type(
         self, document_type: str, limit: int
@@ -505,8 +496,13 @@ class UARBScraper:
         """Open the type's tab and download up to ``limit`` distinct documents.
 
         Returns ``(documents, failed_count)``. Returns ``([], 0)`` for an empty/zero-count tab.
-        Dismisses the empty-tab modal before acting, applies the PDF filter, then runs the
-        scroll-collect-dedupe loop with per-document retry-then-skip.
+        Dismisses the empty-tab modal before acting, then runs the scroll-collect-dedupe loop with
+        per-document retry-then-skip.
+
+        Note: the spec's optional "PDF Only" pre-filter (§7.6) is deliberately NOT applied — the
+        validated spike never used it, every modal's file button is accepted regardless of
+        extension (and classified by magic bytes), and the extra round-trip added latency without
+        narrowing anything for all-PDF types. A flagged deviation toward the validated spike.
         """
         await self.dismiss_modal()  # clear any leftover curtain
         tab = self.page.get_by_role("button", name=document_type, exact=False)
@@ -524,7 +520,6 @@ class UARBScraper:
         if m and int(m.group(1)) == 0:
             log.info("type_tab_empty", document_type=document_type)
             return [], 0
-        await self._apply_pdf_filter()
 
         gg = self.page.get_by_role("button", name="Go Get It", exact=False)
         try:
