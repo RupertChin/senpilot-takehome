@@ -44,20 +44,47 @@ class LocalStubUploader(Uploader):
         return url
 
 
-class GcsUploader(Uploader):  # pragma: no cover — wired + tested in Stage 12 (needs GCP)
+class GcsUploader(Uploader):  # pragma: no cover — exercised against live GCS at deploy
     """Prod: upload to GCS and mint a V4 signed GET URL (spec §7.7, §10).
 
-    Requires the runtime SA to self-sign via the IAM SignBlob API (roles/iam.serviceAccountTokenCreator
-    on itself) so no key file is needed. Built lazily so google-cloud-storage isn't imported locally.
+    Signs WITHOUT a key file: on Cloud Run the runtime SA self-signs via the IAM SignBlob API
+    (needs roles/iam.serviceAccountTokenCreator on itself). google-cloud-storage is sync, so the
+    blocking calls run in a thread. Imports are local so the dependency isn't needed in dev.
     """
 
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
 
     async def upload_and_sign(self, zip_path: str, key: str, ttl_hours: int) -> str:
-        raise NotImplementedError(
-            "GcsUploader is wired in Stage 12 (deploy); local uses LocalStubUploader"
+        import asyncio
+
+        return await asyncio.to_thread(self._upload_and_sign_sync, zip_path, key, ttl_hours)
+
+    def _upload_and_sign_sync(self, zip_path: str, key: str, ttl_hours: int) -> str:
+        from datetime import timedelta
+
+        import google.auth
+        from google.auth.transport import requests as gauth_requests
+        from google.cloud import storage
+
+        client = storage.Client(project=self.settings.gcp_project or None)
+        bucket = client.bucket(self.settings.gcs_bucket)
+        blob = bucket.blob(key)
+        blob.upload_from_filename(zip_path, content_type="application/zip")
+
+        # Mint a V4 signed URL via SignBlob (no private key on Cloud Run): refresh the runtime SA's
+        # token and pass its email + access token so generate_signed_url uses the IAM signer.
+        credentials, _ = google.auth.default()
+        credentials.refresh(gauth_requests.Request())
+        url = blob.generate_signed_url(
+            version="v4",
+            expiration=timedelta(hours=ttl_hours),
+            method="GET",
+            service_account_email=getattr(credentials, "service_account_email", None),
+            access_token=getattr(credentials, "token", None),
         )
+        log.info("gcs_uploaded", key=key, bucket=self.settings.gcs_bucket, ttl_hours=ttl_hours)
+        return url
 
 
 def build_uploader(settings: Settings) -> Uploader:

@@ -117,3 +117,15 @@ def test_inbound_ignores_non_received_event(client):
     r = client.post("/inbound", json={"event_type": "message.sent", "message": {"message_id": "x"}})
     assert r.status_code == 200
     assert len(client.app.state.store._jobs) == 0
+
+
+def test_process_tasks_mode_rejects_without_oidc(monkeypatch):
+    # In tasks mode /process requires a valid OIDC token; a tokenless call -> 401 (fail closed).
+    settings = Settings(env="prod", queue_mode="tasks", process_url="https://x/process",
+                        tasks_invoker_sa="invoker@p.iam.gserviceaccount.com", _env_file=None)
+    app = create_app(settings)
+    # Stub the deps so create_app doesn't need live Supabase/AgentMail.
+    app.state.store = type("S", (), {})()
+    c = TestClient(app)
+    r = c.post("/process", json={"message_id": "m"})  # no Authorization header
+    assert r.status_code == 401

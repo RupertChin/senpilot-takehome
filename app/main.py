@@ -112,7 +112,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.post("/process")
     async def process(request: Request) -> Response:
-        # TODO(Stage 12): verify the Cloud Tasks OIDC token (audience = service URL).
+        # In tasks mode /process is reachable only via Cloud Tasks — verify its OIDC token
+        # (audience = the service /process URL). In inline mode there is no queue, so no token.
+        if settings.queue_mode == "tasks" and not await _verify_oidc(request, settings):
+            log.warning("process_oidc_rejected")
+            return Response(status_code=401)
         try:
             body = await request.json()
             message_id = body["message_id"]
@@ -136,6 +140,35 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return Response(status_code=200)
 
     return app
+
+
+async def _verify_oidc(request: Request, settings: Settings) -> bool:
+    """Verify the Cloud Tasks OIDC token on /process (audience = process_url; issuer = invoker SA)."""
+    # Fail closed: in tasks mode the expected principal MUST be configured, or /process (which is
+    # platform-public) would accept any Google-issued token with the right audience.
+    if not settings.tasks_invoker_sa or not settings.process_url:
+        log.error("oidc_misconfigured")
+        return False
+    auth = request.headers.get("authorization", "")
+    if not auth.lower().startswith("bearer "):
+        return False
+    token = auth[7:].strip()
+    try:
+        import asyncio
+
+        from google.auth.transport import requests as gauth_requests
+        from google.oauth2 import id_token
+
+        claims = await asyncio.to_thread(
+            id_token.verify_oauth2_token, token, gauth_requests.Request(), settings.process_url
+        )
+    except Exception:  # noqa: BLE001 — any verification failure is a rejection
+        log.warning("oidc_verify_error", exc_info=True)
+        return False
+    if claims.get("email") != settings.tasks_invoker_sa:
+        log.warning("oidc_wrong_principal", email=claims.get("email"))
+        return False
+    return True
 
 
 app = create_app()

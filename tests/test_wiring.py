@@ -35,16 +35,21 @@ async def test_enqueue_inline_runs_process_fn(monkeypatch):
     assert calls == ["m-1"]
 
 
-async def test_enqueue_tasks_mode_raises(monkeypatch):
-    monkeypatch.setenv("ENV", "prod")
-    monkeypatch.setenv("QUEUE_MODE", "tasks")
-    s = Settings(_env_file=None)
+async def test_enqueue_tasks_mode_creates_cloud_task(monkeypatch):
+    # In tasks mode, enqueue creates a Cloud Task (not the inline process_fn). Mock the GCP call.
+    s = Settings(env="prod", queue_mode="tasks", _env_file=None)
+    created = {}
 
-    async def fake(mid):  # pragma: no cover — must not be called
-        raise AssertionError("should not dispatch")
+    def fake_create(message_id, settings):
+        created["message_id"] = message_id
 
-    with pytest.raises(NotImplementedError):
-        await enqueue("m-1", settings=s, process_fn=fake)
+    monkeypatch.setattr("app.queue.tasks._create_cloud_task", fake_create)
+
+    async def fake(mid):  # pragma: no cover — inline path must not run in tasks mode
+        raise AssertionError("inline process_fn should not run in tasks mode")
+
+    await enqueue("m-1", settings=s, process_fn=fake)
+    assert created["message_id"] == "m-1"
 
 
 async def test_process_job_unknown_message_is_noop():

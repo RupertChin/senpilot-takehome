@@ -1,0 +1,17 @@
+.venv/
+.git/
+.github/
+tests/
+reference/
+outbox/
+spike-artifacts/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.env
+*.zip
+*.md
+PLAN.md
+schema.sql
+.claude/

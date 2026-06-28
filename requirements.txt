@@ -27,6 +27,7 @@ httpx==0.28.1
 # Cloud (used only at deploy / large-file path; imported lazily)
 google-cloud-tasks==2.18.0
 google-cloud-storage==2.19.0
+google-auth==2.55.1  # OIDC verify (/process) + keyless V4 URL signing; pinned (else transitive)
 
 # State store (prod; local uses InMemoryStore)
 supabase==2.11.0
