@@ -11,7 +11,23 @@ import pytest
 
 from app.errors import RetryableError
 from app.models import DownloadedDoc
-from app.scrape.scraper import collect_documents, download_with_retries, parse_doc_no
+from app.scrape.scraper import _short_error, collect_documents, download_with_retries, parse_doc_no
+
+
+def test_short_error_keeps_actionability_reason():
+    exc = Exception(
+        "Locator.click: Timeout 8000ms exceeded.\nCall log:\n"
+        "  - element is visible, enabled and stable\n"
+        '  - <div class="iwps_header"> subtree intercepts pointer events\n'
+        "  - retrying click action"
+    )
+    out = _short_error(exc)
+    assert "Timeout 8000ms exceeded" in out
+    assert "intercepts pointer events" in out  # the real reason is preserved
+    # No actionability line -> just the headline.
+    assert _short_error(Exception("Locator.click: Timeout 8000ms exceeded.")) == (
+        "Locator.click: Timeout 8000ms exceeded."
+    )
 
 
 def test_parse_doc_no_uses_first_filename_stem():

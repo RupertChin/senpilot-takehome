@@ -72,6 +72,24 @@ def parse_counts(body_text: str) -> DocCounts:
     )
 
 
+def _short_error(exc: Exception) -> str:
+    """A compact error string that PRESERVES Playwright's actionability reason for triage.
+
+    Playwright's timeout message buries the real cause (e.g. an element "intercepts pointer
+    events") in a multi-line call log; the bare first line is just "Timeout exceeded". Keep the
+    headline plus the first actionability line so logs explain *why* a click failed.
+    """
+    lines = [ln.strip() for ln in str(exc).splitlines() if ln.strip()]
+    if not lines:
+        return str(exc)[:300]
+    headline = lines[0]
+    for ln in lines[1:]:
+        low = ln.lower()
+        if any(k in low for k in ("intercept", "not visible", "not stable", "outside of the viewport")):
+            return f"{headline} | {ln[:200]}"
+    return headline[:300]
+
+
 def parse_doc_no(filenames: list[str]) -> str:
     """Derive a stable per-document key from a modal's file list (the first filename's stem).
 
@@ -115,7 +133,9 @@ async def collect_documents(
             try:
                 filenames = await open_modal(i)
             except Exception as exc:  # noqa: BLE001 — modal open is transient; try the next row
-                log.warning("modal_open_failed", row=i, error=str(exc).splitlines()[0])
+                # Log enough of the message to keep Playwright's actionability reason (e.g. an
+                # element "intercepts pointer events"), not just the bare "Timeout exceeded" line.
+                log.warning("modal_open_failed", row=i, error=_short_error(exc))
                 continue
             doc_no = parse_doc_no(filenames)
             if doc_no in done:
@@ -131,7 +151,7 @@ async def collect_documents(
                 log.info("doc_downloaded", doc_no=doc_no, files=len(doc.filenames))
             except Exception as exc:  # noqa: BLE001 — retries already exhausted inside download_doc
                 failed += 1
-                log.warning("doc_download_skipped", doc_no=doc_no, error=str(exc).splitlines()[0])
+                log.warning("doc_download_skipped", doc_no=doc_no, error=_short_error(exc))
             await close_modal()
             await polite_sleep()
         if len(docs) >= limit:
@@ -354,7 +374,7 @@ class UARBScraper:
             log.info("modal_dismissed", caption=caption)
             return caption
         except Exception as exc:  # noqa: BLE001 — never let cleanup crash the flow
-            log.warning("dismiss_modal_error", error=str(exc).splitlines()[0])
+            log.warning("dismiss_modal_error", error=_short_error(exc))
             return ""
 
     # ── Download mechanics (two-step modal; spec §7.6) ───────────────────────
@@ -383,15 +403,25 @@ class UARBScraper:
                 if stable >= 3:
                     break
         except Exception as exc:  # noqa: BLE001
-            log.warning("scroll_error", error=str(exc).splitlines()[0])
+            log.warning("scroll_error", error=_short_error(exc))
 
     async def _open_download_modal(self, gg_index: int) -> list[str]:
         """Click a Go-Get-It button and return the file-button labels once the modal is actionable.
 
-        Raises on timeout (the caller treats a failed open as transient and tries the next row).
+        After a virtualized-grid scroll the top rows can sit UNDER the sticky FileMaker header
+        (``iwps_header``), which intercepts the pointer event — Playwright's own pre-click scroll
+        only nudges the row to the nearest edge, leaving it occluded, so the click would burn the
+        full default timeout. We first center the row in the grid (clear of the header) via
+        ``scrollIntoView({block:'center'})``, then click with a short timeout so any still-occluded
+        row fails fast and the caller moves on (the row reappears clear on a later scroll pass).
         """
         gg = self.page.get_by_role("button", name="Go Get It", exact=False)
-        await gg.nth(gg_index).click()
+        target = gg.nth(gg_index)
+        try:
+            await target.evaluate("el => el.scrollIntoView({block: 'center', inline: 'nearest'})")
+        except Exception:  # noqa: BLE001 — best-effort; the click still auto-waits/retries
+            pass
+        await target.click(timeout=selectors.ROW_CLICK_TIMEOUT_MS)
         modal = self.page.locator(".v-window")
         await modal.wait_for(state="visible", timeout=selectors.MODAL_TIMEOUT_MS)
         file_btn = modal.get_by_role("button", name=selectors.FILE_BUTTON_RE)
@@ -467,7 +497,7 @@ class UARBScraper:
                 await self.dismiss_modal()
                 log.info("pdf_filter_applied")
         except Exception as exc:  # noqa: BLE001
-            log.warning("pdf_filter_skipped", error=str(exc).splitlines()[0])
+            log.warning("pdf_filter_skipped", error=_short_error(exc))
 
     async def download_type(
         self, document_type: str, limit: int
@@ -485,6 +515,15 @@ class UARBScraper:
             return [], 0
         await tab.first.click()
         await self.dismiss_modal()  # empty-tab "No Matching Records" guard
+        # Defensive: an empty type's tab label reads "<Type> - 0". Return [] immediately rather than
+        # scanning Go-Get-It buttons left over from the previous tab (they're stale/occluded and each
+        # click would burn the full timeout). In the normal flow scrape_matter already short-circuits
+        # a 0-count type before calling this, so this guards direct/edge use.
+        body = await self._body_text()
+        m = selectors.count_re(document_type).search(body)
+        if m and int(m.group(1)) == 0:
+            log.info("type_tab_empty", document_type=document_type)
+            return [], 0
         await self._apply_pdf_filter()
 
         gg = self.page.get_by_role("button", name="Go Get It", exact=False)
