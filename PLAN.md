@@ -154,6 +154,7 @@ request their specific credential.
   oversized-send try/except falls back to the GCS link.
 
 ### Stage 12 — Cloud Tasks + /process OIDC + Dockerfile + deploy — **PAUSE: needs GCP/GCS**
+  **Stage 7 review carried forward (prod-only):** implement GcsUploader.upload_and_sign (V4 signed URL via SA SignBlob) before flipping ENV=prod (NotImplementedError currently classifies retryable); decide user-reply on exhausted Cloud-Tasks retries (today: no failure email in tasks mode, Sentry/DLQ only); optional retention sweep for scrape trace dirs (page.html accumulates under local trace_always).
 - **Goal:** `QUEUE_MODE=tasks`, OIDC-verified `/process`, container, Cloud Run + queue + bucket.
 - **Files:** `app/queue/tasks.py` (Cloud Tasks enqueue + OIDC), `app/main.py` `/process` OIDC verify,
   `Dockerfile`, deploy config. Wire real GCS upload + signed URL (SA token-creator self-sign).
@@ -169,7 +170,7 @@ request their specific credential.
 - [x] Stage 4 — Scraper: download loop + guards (live M12205: 10 distinct docs + empty-tab; 79 offline tests; review: 1 blocking fixed)
 - [x] Stage 5 — LLM (live Anthropic 8/8; 103 offline; review: no blocking)
 - [x] Stage 6 — Pipeline inline happy path (live §12 e2e PASS: reply+ZIP in outbox; 118 offline; review: no blocking)
-- [ ] Stage 7 — Packager + robustness
+- [x] Stage 7 — Packager + robustness (live §12 re-validated; 123 offline; review: no blocking)
 - [ ] Stage 8 — Thread-context follow-up
 - [ ] Stage 9 — README + conversational ack
 - [ ] Stage 10 — SupabaseStore (PAUSE: Supabase creds)

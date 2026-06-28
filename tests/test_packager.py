@@ -9,6 +9,17 @@ import pytest
 from app.config import Settings
 from app.models import DownloadedDoc
 from app.package.packager import _dedupe_name, package
+from app.package.uploader import LocalStubUploader
+
+
+async def test_local_stub_uploader_contract(tmp_path):
+    src = tmp_path / "x.zip"
+    src.write_bytes(b"PK\x03\x04 data")
+    up = LocalStubUploader(base_dir=tmp_path / "gcs")
+    url = await up.upload_and_sign(str(src), key="jobs/abc.zip", ttl_hours=72)
+    assert url == "https://storage.local.stub/jobs/abc.zip?ttl=72h"
+    copies = list((tmp_path / "gcs").glob("*"))
+    assert len(copies) == 1 and copies[0].read_bytes() == b"PK\x03\x04 data"
 
 
 def test_dedupe_name_collisions():
@@ -32,7 +43,7 @@ async def test_package_attaches_and_dedupes(tmp_path, monkeypatch):
         f.write_bytes(b"%PDF-1.7 " + bytes(50))
         docs.append(DownloadedDoc(doc_no=f"H-1-{i}", filenames=["H-1.pdf"], paths=[str(f)], total_bytes=f.stat().st_size))
 
-    delivery, zip_path = await package(docs, "job-x", Settings(_env_file=None))
+    delivery, zip_path, _size = await package(docs, "job-x", Settings(_env_file=None))
     assert delivery == "attach"
     with zipfile.ZipFile(zip_path) as zf:
         names = zf.namelist()
@@ -44,17 +55,24 @@ async def test_package_attaches_and_dedupes(tmp_path, monkeypatch):
 async def test_package_skips_missing_source(tmp_path, monkeypatch):
     monkeypatch.setenv("TMPDIR", str(tmp_path))
     docs = [DownloadedDoc(doc_no="X", filenames=["gone.pdf"], paths=[str(tmp_path / "gone.pdf")], total_bytes=0)]
-    delivery, zip_path = await package(docs, "job-y", Settings(_env_file=None))
+    delivery, zip_path, _size = await package(docs, "job-y", Settings(_env_file=None))
     assert delivery == "attach"
     with zipfile.ZipFile(zip_path) as zf:
         assert zf.namelist() == []  # missing source skipped, empty (valid) zip
 
 
-async def test_package_over_threshold_raises_until_stage7(tmp_path, monkeypatch):
+async def test_package_over_threshold_returns_link(tmp_path, monkeypatch):
     monkeypatch.setenv("TMPDIR", str(tmp_path))
     monkeypatch.setenv("ATTACH_THRESHOLD_BYTES", "10")  # force the link branch
     f = tmp_path / "big.pdf"
     f.write_bytes(b"%PDF-1.7 " + bytes(500))
     docs = [DownloadedDoc(doc_no="B", filenames=["big.pdf"], paths=[str(f)], total_bytes=f.stat().st_size)]
-    with pytest.raises(NotImplementedError):
-        await package(docs, "job-z", Settings(_env_file=None))
+    uploader = LocalStubUploader(base_dir=tmp_path / "gcs")
+    delivery, url, size = await package(docs, "job-z", Settings(_env_file=None), uploader=uploader)
+    assert delivery == "link"
+    assert url.startswith("https://storage.local.stub/jobs/job-z.zip")
+    assert size > 10
+    # The local zip is removed after upload (the user fetches it from the link).
+    assert not (tmp_path / "job-z.zip").exists()
+    # The stub "uploaded" a copy.
+    assert list((tmp_path / "gcs").glob("*")) != []

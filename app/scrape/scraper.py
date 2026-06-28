@@ -543,57 +543,76 @@ async def scrape_matter(
     """
     async with async_playwright() as p:
         browser, context = await launch_browser(p, settings)
+        await context.tracing.start(screenshots=True, snapshots=True, sources=True)
+        page = await context.new_page()
+        scraper = UARBScraper(page, polite_delay_s=settings.polite_delay_s)
+        result: ScrapeResult | None = None
         try:
-            page = await context.new_page()
-            scraper = UARBScraper(page, polite_delay_s=settings.polite_delay_s)
-
             await scraper.goto_and_ready()
             found = await scraper.search(matter_number)
             if not found:
-                return ScrapeResult(
+                result = ScrapeResult(
                     matter_number=matter_number,
                     found=False,
-                    metadata=None,
                     requested_type=document_type,
-                    type_count=0,
-                    documents=[],
-                    requested=0,
-                    downloaded=0,
-                    failed=0,
                 )
-
-            counts = await scraper.read_counts()
-            results_text = await scraper.read_results_text()
-            metadata = await extract_metadata(matter_number, results_text)
-            metadata.counts = counts  # counts are authoritative (regex), not LLM-derived
-
-            type_count = counts.for_type(document_type)
-            if type_count == 0:
-                return ScrapeResult(
-                    matter_number=matter_number,
-                    found=True,
-                    metadata=metadata,
-                    requested_type=document_type,
-                    type_count=0,
-                    documents=[],
-                    requested=0,
-                    downloaded=0,
-                    failed=0,
-                )
-
-            limit = min(settings.max_documents, type_count)
-            docs, failed = await scraper.download_type(document_type, limit)
-            return ScrapeResult(
-                matter_number=matter_number,
-                found=True,
-                metadata=metadata,
-                requested_type=document_type,
-                type_count=type_count,
-                documents=docs,
-                requested=limit,
-                downloaded=len(docs),
-                failed=failed,
-            )
+            else:
+                counts = await scraper.read_counts()
+                results_text = await scraper.read_results_text()
+                metadata = await extract_metadata(matter_number, results_text)
+                metadata.counts = counts  # counts are authoritative (regex), not LLM-derived
+                type_count = counts.for_type(document_type)
+                if type_count == 0:
+                    result = ScrapeResult(
+                        matter_number=matter_number,
+                        found=True,
+                        metadata=metadata,
+                        requested_type=document_type,
+                        type_count=0,
+                    )
+                else:
+                    limit = min(settings.max_documents, type_count)
+                    docs, failed = await scraper.download_type(document_type, limit)
+                    result = ScrapeResult(
+                        matter_number=matter_number,
+                        found=True,
+                        metadata=metadata,
+                        requested_type=document_type,
+                        type_count=type_count,
+                        documents=docs,
+                        requested=limit,
+                        downloaded=len(docs),
+                        failed=failed,
+                    )
+            # Success: keep the trace only when configured to (local always; prod on failure only).
+            await _finish_trace(context, page, matter_number, settings, failed=False)
+            return result
+        except Exception:
+            # Scrape failure (§8): persist a Playwright trace + screenshot + page content for triage.
+            await _finish_trace(context, page, matter_number, settings, failed=True)
+            raise
         finally:
             await context.close()
             await browser.close()
+
+
+async def _finish_trace(context, page, matter_number, settings: Settings, *, failed: bool) -> None:
+    """Stop tracing; save trace + screenshot + page content on failure (or always, locally)."""
+    if not failed and not settings.trace_always:
+        try:
+            await context.tracing.stop()  # discard
+        except Exception:  # pragma: no cover
+            pass
+        return
+    try:
+        art_dir = Path(tempfile.mkdtemp(prefix=f"scrape_{matter_number}_"))
+        await context.tracing.stop(path=str(art_dir / "trace.zip"))
+        if failed:
+            try:
+                await page.screenshot(path=str(art_dir / "failure.png"))
+                (art_dir / "page.html").write_text(await page.content(), encoding="utf-8")
+            except Exception:  # pragma: no cover — best-effort artifacts
+                pass
+        log.info("scrape_trace_saved", matter=matter_number, dir=str(art_dir), failed=failed)
+    except Exception:  # pragma: no cover — never let tracing crash the scrape
+        log.warning("scrape_trace_failed", matter=matter_number)

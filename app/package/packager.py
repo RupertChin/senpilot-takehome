@@ -16,6 +16,7 @@ from pathlib import Path
 from app.config import Settings
 from app.models import DownloadedDoc
 from app.observability import get_logger
+from app.package.uploader import Uploader, build_uploader
 
 log = get_logger(__name__)
 
@@ -35,9 +36,17 @@ def _dedupe_name(name: str, used: set[str]) -> str:
 
 
 async def package(
-    docs: list[DownloadedDoc], job_id: str, settings: Settings
-) -> tuple[str, str]:
-    """Build the zip and decide delivery. Stage 6 returns ``("attach", zip_path)``."""
+    docs: list[DownloadedDoc],
+    job_id: str,
+    settings: Settings,
+    uploader: Uploader | None = None,
+) -> tuple[str, str, int]:
+    """Build the zip and decide delivery (spec §7.7).
+
+    Returns ``(delivery, payload, raw_zip_bytes)``: ``("attach", zip_path, size)`` when the raw zip
+    is ≤ the (base64-aware) threshold; otherwise ``("link", signed_url, size)`` after uploading —
+    the caller uses ``size`` for the §5 "It's {size}MB — too large to attach" wording.
+    """
     out_dir = Path(os.environ.get("TMPDIR", "/tmp"))
     zip_path = out_dir / f"{job_id}.zip"
     used: set[str] = set()
@@ -67,9 +76,17 @@ async def package(
     )
 
     if size <= settings.attach_threshold_bytes:
-        return ("attach", str(zip_path))
+        return ("attach", str(zip_path), size)
 
-    # TODO(Stage 7): upload to GCS + mint a V4 signed URL, return ("link", url).
-    raise NotImplementedError(
-        f"zip {size}B exceeds attach threshold; GCS link path lands in Stage 7"
+    # Oversized: upload + mint a time-limited link (states the size reason in the reply).
+    uploader = uploader or build_uploader(settings)
+    url = await uploader.upload_and_sign(
+        str(zip_path), key=f"jobs/{job_id}.zip", ttl_hours=settings.signed_url_ttl_hours
     )
+    # The local zip is now redundant (the user fetches it from the link); remove it.
+    try:
+        zip_path.unlink()
+    except OSError:
+        pass
+    log.info("packaged_link", job_id=job_id, zip_bytes=size)
+    return ("link", url, size)

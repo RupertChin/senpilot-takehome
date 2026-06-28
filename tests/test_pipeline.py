@@ -198,6 +198,7 @@ async def test_empty_type(tmp_path, monkeypatch):
 
 
 async def test_happy_path_attaches_zip(tmp_path, monkeypatch):
+    monkeypatch.setenv("TMPDIR", str(tmp_path))  # zip lands here so cleanup is assertable
     # Two real temp PDFs for the packager to zip.
     src_dir = tmp_path / "dl"
     src_dir.mkdir()
@@ -239,6 +240,47 @@ async def test_happy_path_attaches_zip(tmp_path, monkeypatch):
         assert len(zf.namelist()) == 2  # both docs zipped
     # Sources were deleted as they were zipped (peak-disk cap).
     assert not (src_dir / "H-0.pdf").exists()
+    # The per-job download dir and the local zip are cleaned up after a successful send.
+    assert not src_dir.exists()  # _cleanup rmtree'd the doc parent dir
+    assert not (tmp_path / "job-1.zip").exists()  # local zip removed (TMPDIR=tmp_path)
+
+
+async def test_reply_already_sent_no_double_send(tmp_path, monkeypatch):
+    # If the reply succeeds but a later step (set_status) raises, the failure email must NOT fire.
+    src = tmp_path / "dl"
+    src.mkdir()
+    p = src / "H-0.pdf"
+    p.write_bytes(b"%PDF-1.7 " + bytes(100))
+    doc = DownloadedDoc(doc_no="H-0", filenames=[p.name], paths=[str(p)], total_bytes=p.stat().st_size)
+
+    async def fake_scrape(matter, doc_type, *, settings, extract_metadata):
+        return ScrapeResult(
+            matter_number=matter, found=True, metadata=_metadata(), requested_type=doc_type,
+            type_count=42, documents=[doc], requested=1, downloaded=1, failed=0,
+        )
+
+    monkeypatch.setattr("app.pipeline.scrape_matter", fake_scrape)
+    store = InMemoryStore()
+    deps = PipelineDeps(
+        store=store, email=FileEmailClient(outbox_dir=tmp_path / "out"),
+        llm=FakeLLM(summary="Hi M12205, 1 of the 1."), settings=Settings(_env_file=None),
+    )
+    # Make the FINAL set_status("done") raise, after the reply has been sent.
+    calls = {"n": 0}
+    orig = store.set_status
+
+    async def flaky_set_status(job_id, status):
+        calls["n"] += 1
+        if status == "done":
+            raise RuntimeError("store blip after reply")
+        return await orig(job_id, status)
+
+    monkeypatch.setattr(store, "set_status", flaky_set_status)
+    await _run(deps, _inbound())
+    out = tmp_path / "out"
+    emls = list(out.glob("*.eml"))
+    assert len(emls) == 1  # exactly one reply — the success body, NOT a second failure email
+    assert "Something went wrong" not in emls[0].read_text()
 
 
 async def test_partial_success_still_replies(tmp_path, monkeypatch):
@@ -271,10 +313,9 @@ async def test_partial_success_still_replies(tmp_path, monkeypatch):
     assert (await deps.store.load_job("m-1")).status == "done"
 
 
-async def test_all_downloads_failed_raises_retryable(tmp_path, monkeypatch):
-    # type has docs but none downloaded -> infra failure, not an empty-zip "0 of N" reply.
-    from app.errors import RetryableError
-
+async def test_all_downloads_failed_sends_failure_email(tmp_path, monkeypatch):
+    # type has docs but none downloaded -> infra failure. Inline mode (no queue) -> §5 failure
+    # email + status failed, NOT an empty-zip "0 of N" reply.
     async def fake_scrape(matter, doc_type, *, settings, extract_metadata):
         return ScrapeResult(
             matter_number=matter,
@@ -290,6 +331,86 @@ async def test_all_downloads_failed_raises_retryable(tmp_path, monkeypatch):
 
     monkeypatch.setattr("app.pipeline.scrape_matter", fake_scrape)
     deps = _deps(tmp_path, FakeLLM())
-    with pytest.raises(RetryableError):
+    await _run(deps, _inbound())
+    body = _outbox_eml(tmp_path)
+    assert "Something went wrong fetching M12205" in body
+    assert "Reference: job-1" in body
+    assert "ZIP" not in body  # no empty-zip attachment reply
+    assert (await deps.store.load_job("m-1")).status == "failed"
+
+
+async def test_infra_error_mid_pipeline_sends_failure_email(tmp_path, monkeypatch):
+    # A transient error escaping a stage (inline mode) -> failure email + status failed.
+    async def boom_scrape(matter, doc_type, *, settings, extract_metadata):
+        raise TimeoutError("scrape timed out")
+
+    monkeypatch.setattr("app.pipeline.scrape_matter", boom_scrape)
+    deps = _deps(tmp_path, FakeLLM())
+    await _run(deps, _inbound())
+    body = _outbox_eml(tmp_path)
+    assert "Something went wrong fetching M12205" in body
+    assert "Reference: job-1" in body
+    assert (await deps.store.load_job("m-1")).status == "failed"
+
+
+async def test_tasks_mode_reraises_for_cloud_tasks_retry(tmp_path, monkeypatch):
+    # In tasks mode a retryable infra failure re-raises so /process can 5xx (Cloud Tasks retries).
+    async def boom_scrape(matter, doc_type, *, settings, extract_metadata):
+        raise TimeoutError("scrape timed out")
+
+    monkeypatch.setattr("app.pipeline.scrape_matter", boom_scrape)
+    deps = PipelineDeps(
+        store=InMemoryStore(),
+        email=FileEmailClient(outbox_dir=tmp_path),
+        llm=FakeLLM(),
+        settings=Settings(env="prod", queue_mode="tasks", _env_file=None),
+    )
+    with pytest.raises(Exception):  # noqa: B017 — RetryableError re-raised
         await _run(deps, _inbound())
-    assert _outbox_eml(tmp_path) is None  # no empty-zip reply shipped
+    assert _outbox_eml(tmp_path) is None  # no email in tasks mode (Cloud Tasks retries)
+
+
+async def test_link_branch_states_size_and_reason(tmp_path, monkeypatch):
+    # Force the link branch (tiny threshold) and assert the summary path uses link + size.
+    src = tmp_path / "dl"
+    src.mkdir()
+    p = src / "big.pdf"
+    p.write_bytes(b"%PDF-1.7 " + bytes(1000))
+    doc = DownloadedDoc(doc_no="big", filenames=[p.name], paths=[str(p)], total_bytes=p.stat().st_size)
+
+    async def fake_scrape(matter, doc_type, *, settings, extract_metadata):
+        return ScrapeResult(
+            matter_number=matter,
+            found=True,
+            metadata=_metadata(),
+            requested_type=doc_type,
+            type_count=42,
+            documents=[doc],
+            requested=1,
+            downloaded=1,
+            failed=0,
+        )
+
+    captured = {}
+
+    class _LinkLLM(FakeLLM):
+        async def summarize(self, scrape, delivery, link, *, link_size_mb=None, link_ttl_hours=None):
+            captured.update(delivery=delivery, link=link, size_mb=link_size_mb, ttl=link_ttl_hours)
+            return f"linked at {link}"
+
+    monkeypatch.setenv("TMPDIR", str(tmp_path))
+    monkeypatch.setattr("app.pipeline.scrape_matter", fake_scrape)
+    deps = PipelineDeps(
+        store=InMemoryStore(),
+        email=FileEmailClient(outbox_dir=tmp_path / "out"),
+        llm=_LinkLLM(),
+        settings=Settings(attach_threshold_bytes=10, _env_file=None),
+    )
+    await _run(deps, _inbound())
+    assert captured["delivery"] == "link"
+    assert captured["link"].startswith("https://storage.local.stub/")
+    assert captured["size_mb"] is not None and captured["size_mb"] > 0
+    assert captured["ttl"] == 72
+    # No attachment on the link branch.
+    eml = list((tmp_path / "out").glob("*.eml"))[0].read_text()
+    assert "X-Attachment:" not in eml
