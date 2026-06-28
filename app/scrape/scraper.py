@@ -204,9 +204,16 @@ async def download_with_retries(
 class UARBScraper:
     """Drives one matter's worth of interaction on a single Playwright ``page``."""
 
-    def __init__(self, page: Page, polite_delay_s: float = 0.6) -> None:
+    def __init__(
+        self,
+        page: Page,
+        polite_delay_s: float = 0.6,
+        download_timeout_s: int = selectors.DOWNLOAD_TIMEOUT_MS // 1000,
+    ) -> None:
         self.page = page
         self.polite_delay_s = polite_delay_s
+        # Per-file download budget (start + byte transfer). Env-tunable via DOWNLOAD_TIMEOUT_S.
+        self.download_timeout_ms = download_timeout_s * 1000
 
     # ── Readiness ────────────────────────────────────────────────────────────
     async def goto_and_ready(self) -> float:
@@ -463,7 +470,7 @@ class UARBScraper:
             n_files = await file_btn.count()
 
         async def _fetch(j: int) -> tuple[str, str, int]:
-            async with self.page.expect_download(timeout=selectors.DOWNLOAD_TIMEOUT_MS) as di:
+            async with self.page.expect_download(timeout=self.download_timeout_ms) as di:
                 await file_btn.nth(j).click()
             d = await di.value
             suggested = d.suggested_filename or (
@@ -478,7 +485,7 @@ class UARBScraper:
             # large file (one Exhibit was 48 MB); a transfer that exceeds it is abandoned and the
             # per-file retry tries again, then the doc is skipped+counted (never an infinite hang).
             await asyncio.wait_for(
-                d.save_as(str(dest)), timeout=selectors.DOWNLOAD_TIMEOUT_MS / 1000
+                d.save_as(str(dest)), timeout=self.download_timeout_ms / 1000
             )
             return dest.name, str(dest), dest.stat().st_size
 
@@ -579,7 +586,11 @@ async def scrape_matter(
         browser, context = await launch_browser(p, settings)
         await context.tracing.start(screenshots=True, snapshots=True, sources=True)
         page = await context.new_page()
-        scraper = UARBScraper(page, polite_delay_s=settings.polite_delay_s)
+        scraper = UARBScraper(
+            page,
+            polite_delay_s=settings.polite_delay_s,
+            download_timeout_s=settings.download_timeout_s,
+        )
         result: ScrapeResult | None = None
         try:
             await scraper.goto_and_ready()

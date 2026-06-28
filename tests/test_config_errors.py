@@ -69,9 +69,20 @@ def test_tunable_defaults_match_spec(monkeypatch):
     assert s.attach_threshold_bytes == 18_000_000
     assert s.signed_url_ttl_hours == 72
     assert s.polite_delay_s == 0.6
+    assert s.download_timeout_s == 90
     assert s.classify_model == "claude-haiku-4-5"
     assert s.extract_model == "claude-sonnet-4-6"
     assert s.summary_model == "claude-sonnet-4-6"
+
+
+def test_download_timeout_env_override_threads_to_scraper(monkeypatch):
+    monkeypatch.setenv("DOWNLOAD_TIMEOUT_S", "30")
+    s = Settings(_env_file=None)
+    assert s.download_timeout_s == 30
+    from app.scrape.scraper import UARBScraper
+
+    scraper = UARBScraper(page=None, download_timeout_s=s.download_timeout_s)
+    assert scraper.download_timeout_ms == 30_000  # seconds -> ms, env-driven
 
 
 # ── Error taxonomy ────────────────────────────────────────────────────────────

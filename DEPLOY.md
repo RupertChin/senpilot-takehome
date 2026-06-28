@@ -233,6 +233,12 @@ working signed link (`storage.googleapis.com/...`), exercising the SignBlob path
 
 - **Two-phase deploy is intentional:** `PROCESS_URL` (the Cloud Task target) only exists after the
   first deploy, so we deploy inline → capture URL → flip to tasks.
+- **Tunables default unless set.** `MAX_DOCUMENTS`, `DOWNLOAD_TIMEOUT_S`, `ATTACH_THRESHOLD_BYTES`,
+  `SIGNED_URL_TTL_HOURS`, `POLITE_DELAY_S`, and the model ids are **not** in the deploy command
+  above, so the service uses their `config.py` defaults (the container never reads `.env`). To set
+  or change one in prod, add it to `--set-env-vars` or run a live
+  `gcloud run services update $SERVICE --region $REGION --update-env-vars=MAX_DOCUMENTS=5` — no
+  redeploy of code needed. See the README "Tunables" table.
 - **Memory:** 2 GiB handles Chromium + a download + the growing zip on tmpfs. Bump to 4 GiB if a
   very large matter OOMs.
 - **Signed URLs need no key file:** the runtime SA self-signs via IAM SignBlob — that's the

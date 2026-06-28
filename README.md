@@ -65,6 +65,28 @@ The environment switch is the single source of truth — `Settings` in `app/conf
 local-vs-prod behavior (browser headless, log format, email client, store, queue mode, trace policy)
 from `ENV`.
 
+### Tunables
+
+Behavioral knobs are plain environment variables (defaults in `app/config.py`), adjustable the same
+way in **local** (`.env`) and **prod** (Cloud Run env vars — `gcloud run deploy --set-env-vars` or a
+live `gcloud run services update --update-env-vars=...`, no code change). The container does **not**
+read `.env` (it's git-ignored and in `.dockerignore`), so in prod these come only from the env vars
+set on the service; unset ones fall back to the defaults below.
+
+| Env var | Default | What it controls |
+|---|---|---|
+| `MAX_DOCUMENTS` | `10` | Hard cap of documents (rows) downloaded per request (`min(MAX_DOCUMENTS, type_count)`). |
+| `DOWNLOAD_TIMEOUT_S` | `90` | Per-file download budget — covers both the download *start* and the **byte transfer** (`save_as`). Sized for a slow large file (one Exhibit was 48 MB); a transfer that exceeds it is retried then the doc is skipped, so a stalled gov-server stream can never hang the job. Lower it to fail faster on stalls (at the risk of abandoning a legitimately large file); raise it for very large matters. |
+| `ATTACH_THRESHOLD_BYTES` | `18000000` | Raw zip ≤ this → attach; above → GCS link. Set below 25 MB to absorb base64 inflation. |
+| `SIGNED_URL_TTL_HOURS` | `72` | TTL of the GCS link for oversized zips. |
+| `POLITE_DELAY_S` | `0.6` | Gap between sequential downloads (politeness toward the gov site). |
+| `CLASSIFY_MODEL` / `EXTRACT_MODEL` / `SUMMARY_MODEL` | Haiku / Sonnet / Sonnet | The Anthropic models per stage. |
+
+> The gov portal occasionally streams a single file's bytes slowly (tens of seconds for one of ~10
+> docs — confirmed via Playwright trace: the time is in `save_as`, the transfer, not the agent). That
+> latency is server-side and within the `DOWNLOAD_TIMEOUT_S` budget; the budget exists to bound a
+> *stuck* transfer, not to speed up a slow-but-completing one.
+
 ### Testing
 
 ```bash
