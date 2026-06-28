@@ -71,13 +71,40 @@ from `ENV`.
 pytest                       # the default suite — offline, no network, fast
 pytest -m live               # live UARB scraper + end-to-end (hits the gov site; polite, one matter)
 pytest -m llm                # live Anthropic LLM tests (cost a few API calls)
+pytest -m supabase           # live SupabaseStore contract (needs SUPABASE_URL/SUPABASE_KEY)
+pytest -m agentmail          # live AgentMail send/reply + signature (needs AGENTMAIL_*)
 ```
 
-Offline tests are the CI default (deterministic, no network). The `live`/`llm` markers are opt-in
-because they hit external services. The deterministic core — count/metadata regex, the
+Offline tests are the CI default (deterministic, no network). The live markers are opt-in because
+they hit external services. The deterministic core — count/metadata regex, the
 scroll-collect-dedupe + retry orchestration, the LLM validation/fallback logic, every pipeline
 branch, the packager, and the thread feature — is fully covered **offline**, so a regression is
 caught without touching the gov site or the API.
+
+### Driving a request locally
+
+With `ENV=local` (the default), boot the server and POST an inbound email to `/inbound`. Locally
+there's **no webhook signature required** (the `FileEmailClient` verify is a no-op) and it accepts
+simple field aliases:
+
+```bash
+uvicorn app.main:app --reload          # serves on http://localhost:8000
+
+curl -X POST http://localhost:8000/inbound -H 'content-type: application/json' \
+  -d '{"message_id":"local-1","from":"you@example.com","to":"agent@local",
+       "subject":"docs","body_text":"Please send the Other Documents for M12205"}'
+```
+
+What happens: a **headed** Chromium window opens (local runs headed with `slow_mo` so you can
+watch), the agent scrapes M12205 live, and the reply lands in **`./outbox/`** as an `.eml` file with
+the ZIP beside it. Processing is **inline**, so the HTTP response returns only after the scrape
+finishes (~30–60 s for 10 docs; lower `MAX_DOCUMENTS` in `.env` to speed it up). The same flow is
+covered by `pytest -m live tests/test_pipeline_live.py`.
+
+> In `ENV=local` the email client is `FileEmailClient` — replies go to `./outbox/`, **not** through
+> AgentMail, and the store is in-memory (nothing persisted). This is the clean way to exercise the
+> scrape/parse/summarize logic with no side effects. To use a **real AgentMail inbox** locally
+> instead, see the local-dev note under [Future improvements](#future-improvements).
 
 ---
 
@@ -292,6 +319,19 @@ Out of scope for this build, documented here:
 - A failure email on exhausted Cloud-Tasks retries (today the failure email is the inline-mode path;
   prod relies on Sentry/DLQ).
 - A retention sweep for saved scrape traces (`page.html` accumulates under local `trace_always`).
+- **Local-dev: connect a real AgentMail inbox without a public URL.** Today, driving a request
+  locally means POSTing to `/inbound` with `curl` (`ENV=local`, replies → `./outbox/`). To exercise
+  a *real inbox* end-to-end locally there are two paths, neither yet wired: (a) an **AgentMail
+  websocket listener** — a small `python -m app.listen` that subscribes to the inbox over AgentMail's
+  websocket and feeds `message.received` events into `process_job`, so emailing the inbox works with
+  **no public URL / no ngrok** (AgentMail's recommended local-dev approach); or (b) **ngrok** —
+  expose `localhost:8000`, register the tunnel URL as the AgentMail webhook, and the real signed
+  `/inbound` path fires. The websocket listener is the cleaner option and the natural next addition.
+- **Scraper: fail-fast on a stuck modal at the virtualized-scroll boundary.** A row whose
+  Go-Get-It modal click hangs currently eats the full 20 s default action timeout before the loop
+  skips it (output stays correct — it's a latency wrinkle, not a failure). A short explicit
+  modal-open timeout plus a `dismiss_modal()` guard before each open would turn that ~20 s stall into
+  a couple-second skip.
 - The downstream search index (the actual Regulatory Agent this feeds).
 
 ---
