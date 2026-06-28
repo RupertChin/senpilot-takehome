@@ -21,7 +21,8 @@ structlog==24.4.0
 # LLM
 anthropic==0.42.0
 
-# Email (AgentMail bound in phase 8; httpx is the REST fallback transport)
+# Email — AgentMail SDK (prod inbound/outbound); httpx is its transport + REST fallback
+agentmail==0.5.6
 httpx==0.28.1
 
 # Cloud (used only at deploy / large-file path; imported lazily)
