@@ -220,6 +220,14 @@ database**, and Supabase is a pure adapter swap before deploy. *Rejected:* Fires
 extra vendor — but less familiar and needs a local emulator); SQLite (least setup, but doesn't
 survive Cloud Run cold starts, which would make thread-follow-up flaky).
 
+*Access posture:* `jobs` and `threads` are **server-only** tables — no browser/public client ever
+touches them. Prod should connect with the **service-role key** (bypasses RLS, stays in server
+env). The MCP-provisioned dev project uses the publishable/anon key, so its migration disables RLS
+and grants the API roles directly; the Supabase advisor flags RLS-disabled as critical, which is
+acceptable here **only** because the key never leaves the server. `jobs.inbound` stores the full
+inbound email (sender/subject/body) as the job record — server-side, but a retention policy and the
+service-role posture are the right call for any real deployment.
+
 ### Thread follow-up — inherit-on-null, explicit-overrides-inherited
 A follow-up in the same thread that omits the matter (or type) inherits it from the thread's last
 request; an explicit value in the new email always wins. Context is keyed by the provider's thread

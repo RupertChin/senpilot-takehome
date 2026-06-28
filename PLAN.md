@@ -146,6 +146,7 @@ request their specific credential.
   thread upsert/get round-trips.
 
 ### Stage 11 — AgentMailClient (real inbound/outbound) — **PAUSE: needs `AGENTMAIL_*`**
+  **Stage 10 review carried forward:** with the durable store + real provider retries, reconcile /inbound's claim→save window — a save_job failure after a successful claim leaves the claim consumed (retry hits claim=False → job lost). Guard the save (release-claim-on-failure or atomic claim+save) when AgentMail/Cloud Tasks retries go live.
 - **Goal:** bind AgentMail against its **live docs** (do not guess the API).
 - **Files:** `app/email/agentmail.py` (inbound webhook payload → `InboundEmail`; `send_reply`
   in-thread + base64 attachment; signature verification in `/inbound`). Read
@@ -173,6 +174,6 @@ request their specific credential.
 - [x] Stage 7 — Packager + robustness (live §12 re-validated; 123 offline; review: no blocking)
 - [x] Stage 8 — Thread-context follow-up (real-store tests incl. two-turn e2e; 131 offline; review: no blocking)
 - [x] Stage 9 — README + conversational ack (136 offline; review: no blocking; §13 decision log complete)
-- [ ] Stage 10 — SupabaseStore (PAUSE: Supabase creds)
+- [x] Stage 10 — SupabaseStore (MCP-provisioned project; live contract 3/3; review: no blocking)
 - [ ] Stage 11 — AgentMailClient (PAUSE: AgentMail creds)
 - [ ] Stage 12 — Cloud Tasks + deploy (PAUSE: GCP)

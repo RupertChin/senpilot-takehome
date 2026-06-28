@@ -34,6 +34,16 @@ create table if not exists threads (
     updated_at          timestamptz not null default now()
 );
 
+-- ── Access posture ───────────────────────────────────────────────────────────
+-- These are SERVER-ONLY tables (no public/browser client touches them). Prod should connect with
+-- the SERVICE-ROLE key, which bypasses RLS and stays server-side. The MCP-provisioned dev project
+-- uses the publishable/anon key, so its migration disables RLS and grants the API roles directly:
+--   alter table jobs    disable row level security;
+--   alter table threads disable row level security;
+--   grant all on table jobs, threads to anon, authenticated, service_role;
+-- The Supabase advisor flags RLS-disabled as critical — acceptable here only because the key never
+-- leaves the server. See the README "State store" decision for the full rationale.
+
 -- updated_at is maintained by the application on each write (kept out of triggers for simplicity).
 -- Upsert pattern for threads:
 --   INSERT INTO threads (thread_id, last_matter_number, last_document_type, updated_at)
