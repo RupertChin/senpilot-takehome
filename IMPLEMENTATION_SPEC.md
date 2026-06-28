@@ -354,6 +354,11 @@ class LLM(ABC):
 
 ### 7.6 Scraper (`app/scrape/`) — confirmed against the live site for M12205 (headed + headless)
 
+> **Lift the validated selectors and timing from `reference/spike.py`** (and read
+> `reference/FINDINGS.md` for the mechanism + gotchas). The mechanics below are the spec; the spike
+> is the working implementation of them, confirmed live — transcribe its locators rather than
+> re-deriving them against FileMaker's quirks.
+
 **`browser.py`**: `launch_browser(settings) -> (browser, context)`. Owns headless flag, `slow_mo`,
 `user_agent` (a realistic desktop Chrome UA), `accept_downloads=True`, default timeout. This is the
 **only** place that names the browser engine, so a later camoufox swap is one function.
@@ -594,7 +599,7 @@ Approvals", Category "Water", dates 04/07/2025 and 10/23/2025, and live counts (
 Documents 5, Other Documents 42, Transcripts 0, Recordings 0 — **these drift; assert structure and
 that values are read live, not the literals**). A 10-document pull from "Other Documents" should
 yield 10 distinct documents, 0 duplicates, all valid files. Reference evidence (traces, DOM dumps,
-the validated `spike.py`) exists in the spike's `spike-artifacts/`.
+the validated `spike.py`) is in `reference/` (`reference/spike.py`, `reference/FINDINGS.md`).
 
 End-to-end local test: send an `InboundEmail` fixture through `process_job` with `FileEmailClient`
 and assert the reply body and the attachment (or, for an oversized zip, the link + reason) in
