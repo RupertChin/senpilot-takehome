@@ -50,8 +50,12 @@ POST_TYPE_WAIT_MS = 400        # settle after typing
 def count_re(doc_type: str) -> re.Pattern[str]:
     return re.compile(rf"{re.escape(doc_type)}\s*-\s*(\d+)")
 
-#: A file-button label inside the "Download Files" modal (by extension).
+#: A file-button label inside the "Download Files" modal (by known extension).
 FILE_BUTTON_RE = re.compile(r"\.(pdf|docx?|xlsx?|tiff?|jpe?g|zip|csv|txt)$", re.I)
+
+#: Broad fallback (from the spike): ANY 2–4 char extension. Catches corpus file types not in the
+#: known list above (e.g. audio/video on Recordings/Transcripts) so those modals still resolve.
+FILE_BUTTON_FALLBACK_RE = re.compile(r"\.\w{2,4}$")
 
 #: Dates on the results screen are MM/DD/YYYY (NOT month-name format).
 DATE_RE = re.compile(r"\b\d{2}/\d{2}/\d{4}\b")
