@@ -417,11 +417,12 @@ class UARBScraper:
         """Click a Go-Get-It button and return the file-button labels once the modal is actionable.
 
         After a virtualized-grid scroll the top rows can sit UNDER the sticky FileMaker header
-        (``iwps_header``), which intercepts the pointer event — Playwright's own pre-click scroll
-        only nudges the row to the nearest edge, leaving it occluded, so the click would burn the
-        full default timeout. We first center the row in the grid (clear of the header) via
-        ``scrollIntoView({block:'center'})``, then click with a short timeout so any still-occluded
-        row fails fast and the caller moves on (the row reappears clear on a later scroll pass).
+        (``iwps_header``), which intercepts the pointer event. We first center the row clear of the
+        header (``scrollIntoView({block:'center'})``) and try a real click with a short timeout; if
+        the row is still occluded (the virtualization can re-render it back under the header), we
+        fall back to dispatching the click straight to the button element via JS — the header can't
+        intercept a JS ``el.click()`` — so the modal opens without the doc being lost or the loop
+        stalling on hit-testing.
         """
         gg = self.page.get_by_role("button", name="Go Get It", exact=False)
         target = gg.nth(gg_index)
@@ -429,7 +430,13 @@ class UARBScraper:
             await target.evaluate("el => el.scrollIntoView({block: 'center', inline: 'nearest'})")
         except Exception:  # noqa: BLE001 — best-effort; the click still auto-waits/retries
             pass
-        await target.click(timeout=selectors.ROW_CLICK_TIMEOUT_MS)
+        try:
+            await target.click(timeout=selectors.ROW_CLICK_TIMEOUT_MS)
+        except PWTimeout:
+            # Occluded by the sticky header — dispatch the click directly to the element, bypassing
+            # pointer hit-testing (Vaadin's buttons are real <button>s that respond to a JS click).
+            log.info("row_click_via_js", row=gg_index)
+            await target.evaluate("el => el.click()")
         modal = self.page.locator(".v-window")
         await modal.wait_for(state="visible", timeout=selectors.MODAL_TIMEOUT_MS)
         file_btn = modal.get_by_role("button", name=selectors.FILE_BUTTON_RE)
