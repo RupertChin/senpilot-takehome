@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import logging
+from contextlib import contextmanager
 from contextvars import ContextVar
 
 import structlog
@@ -66,8 +67,26 @@ def get_logger(name: str | None = None):
 
 
 def bind_correlation_id(job_id: str) -> None:
-    """Bind a job's correlation id for the current async context."""
+    """Bind a job's correlation id for the current async context.
+
+    Prefer ``job_context`` for scoped binding; this bare setter is kept for callers that bind for
+    the remainder of a task that is already isolated per-request.
+    """
     correlation_id.set(job_id)
+
+
+@contextmanager
+def job_context(job_id: str):
+    """Bind ``job_id`` as the correlation id for the duration of the block, then reset it.
+
+    Resetting on exit prevents a stale job id leaking into later log lines if processing ever runs
+    inside a shared/long-lived task rather than a per-request one.
+    """
+    token = correlation_id.set(job_id)
+    try:
+        yield
+    finally:
+        correlation_id.reset(token)
 
 
 def init_sentry(settings: Settings | None = None) -> None:

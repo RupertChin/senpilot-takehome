@@ -162,8 +162,8 @@ request their specific credential.
 ---
 
 ## Progress
-- [ ] Stage 1 — Scaffold core
-- [ ] Stage 2 — Interfaces + local adapters + FastAPI
+- [x] Stage 1 — Scaffold core (commit 6811458; 39 tests; review: no blocking)
+- [x] Stage 2 — Interfaces + local adapters + FastAPI (61 tests; review: no blocking)
 - [ ] Stage 3 — Scraper: navigate/search/metadata/counts (live)
 - [ ] Stage 4 — Scraper: download loop + guards (live)
 - [ ] Stage 5 — LLM
