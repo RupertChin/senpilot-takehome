@@ -106,6 +106,7 @@ request their specific credential.
 - **Deferred account:** Anthropic (present) + live site.
 
 ### Stage 7 — Packager + robustness — _needs Anthropic_
+  **Stage 6 review carried forward:** GCS link branch for oversized zip (currently NotImplementedError); per-job try/finally tmp+zip cleanup; failure-email (replies.failure) with job_id + reply-already-sent guard; boundary retry taxonomy in process_job/`/process`; harden the inline except so a failing set_status can't strand a job. (all-downloads-failed is already guarded → RetryableError.)
 - **Goal:** streaming zip + threshold branch + GCS-link fallback (stubbed), retries, idempotency,
   failure email, JSON logging, trace-on-failure, Sentry.
 - **Files:** `app/package/packager.py` (incremental on-disk zip, delete-source-as-you-go,
@@ -167,7 +168,7 @@ request their specific credential.
 - [x] Stage 3 — Scraper: navigate/search/metadata/counts (live M12205 oracle PASS; 68 offline tests; review: 1 blocking fixed)
 - [x] Stage 4 — Scraper: download loop + guards (live M12205: 10 distinct docs + empty-tab; 79 offline tests; review: 1 blocking fixed)
 - [x] Stage 5 — LLM (live Anthropic 8/8; 103 offline; review: no blocking)
-- [ ] Stage 6 — Pipeline inline happy path
+- [x] Stage 6 — Pipeline inline happy path (live §12 e2e PASS: reply+ZIP in outbox; 118 offline; review: no blocking)
 - [ ] Stage 7 — Packager + robustness
 - [ ] Stage 8 — Thread-context follow-up
 - [ ] Stage 9 — README + conversational ack

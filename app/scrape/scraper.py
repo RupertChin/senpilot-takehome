@@ -29,14 +29,16 @@ import time
 from pathlib import Path
 from typing import Awaitable, Callable
 
-from playwright.async_api import Page
+from playwright.async_api import Page, async_playwright
 from playwright.async_api import TimeoutError as PWTimeout
 from tenacity import AsyncRetrying, retry_if_exception_type, stop_after_attempt, wait_exponential
 
+from app.config import Settings
 from app.errors import RetryableError
-from app.models import DocCounts, DownloadedDoc
+from app.models import DocCounts, DocumentType, DownloadedDoc, MatterMetadata, ScrapeResult
 from app.observability import get_logger
 from app.scrape import selectors
+from app.scrape.browser import launch_browser
 
 log = get_logger(__name__)
 
@@ -523,3 +525,75 @@ class UARBScraper:
             tmp_dir=str(tmp_dir),
         )
         return docs, failed
+
+
+async def scrape_matter(
+    matter_number: str,
+    document_type: DocumentType,
+    *,
+    settings: Settings,
+    extract_metadata: Callable[[str, str], Awaitable[MatterMetadata]],
+) -> ScrapeResult:
+    """Full scrape orchestration (spec §4 scrape step): launch → search → counts+metadata → download.
+
+    Owns the browser lifecycle. ``extract_metadata`` is injected (the pipeline passes
+    ``llm.extract_metadata``) so this module stays free of any LLM dependency. Counts are read
+    deterministically (regex) and are authoritative; the LLM only parses the descriptive metadata
+    from the results text. Returns a fully-populated ``ScrapeResult``.
+    """
+    async with async_playwright() as p:
+        browser, context = await launch_browser(p, settings)
+        try:
+            page = await context.new_page()
+            scraper = UARBScraper(page, polite_delay_s=settings.polite_delay_s)
+
+            await scraper.goto_and_ready()
+            found = await scraper.search(matter_number)
+            if not found:
+                return ScrapeResult(
+                    matter_number=matter_number,
+                    found=False,
+                    metadata=None,
+                    requested_type=document_type,
+                    type_count=0,
+                    documents=[],
+                    requested=0,
+                    downloaded=0,
+                    failed=0,
+                )
+
+            counts = await scraper.read_counts()
+            results_text = await scraper.read_results_text()
+            metadata = await extract_metadata(matter_number, results_text)
+            metadata.counts = counts  # counts are authoritative (regex), not LLM-derived
+
+            type_count = counts.for_type(document_type)
+            if type_count == 0:
+                return ScrapeResult(
+                    matter_number=matter_number,
+                    found=True,
+                    metadata=metadata,
+                    requested_type=document_type,
+                    type_count=0,
+                    documents=[],
+                    requested=0,
+                    downloaded=0,
+                    failed=0,
+                )
+
+            limit = min(settings.max_documents, type_count)
+            docs, failed = await scraper.download_type(document_type, limit)
+            return ScrapeResult(
+                matter_number=matter_number,
+                found=True,
+                metadata=metadata,
+                requested_type=document_type,
+                type_count=type_count,
+                documents=docs,
+                requested=limit,
+                downloaded=len(docs),
+                failed=failed,
+            )
+        finally:
+            await context.close()
+            await browser.close()

@@ -9,14 +9,32 @@ from app.config import Settings
 from app.main import create_app
 
 
+class _JunkLLM:
+    """A network-free LLM stub: classifies everything as junk so process_job marks done with no
+    extract/scrape. Keeps the API tests focused on webhook/idempotency/dispatch wiring."""
+
+    async def classify(self, email):
+        return "junk"
+
+    async def extract(self, email):  # pragma: no cover — not reached for junk
+        raise AssertionError
+
+    async def extract_metadata(self, matter, text):  # pragma: no cover
+        raise AssertionError
+
+    async def summarize(self, *a, **k):  # pragma: no cover
+        raise AssertionError
+
+
 @pytest.fixture
 def client(tmp_path, monkeypatch):
     monkeypatch.delenv("ENV", raising=False)
     monkeypatch.delenv("K_SERVICE", raising=False)
     settings = Settings(_env_file=None)  # local: InMemoryStore + FileEmailClient + inline
     app = create_app(settings)
-    # Point the file email client's outbox at a temp dir.
+    # Point the file email client's outbox at a temp dir; inject a network-free LLM.
     app.state.email.outbox = tmp_path
+    app.state.llm = _JunkLLM()
     tmp_path.mkdir(exist_ok=True)
     return TestClient(app)
 

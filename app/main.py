@@ -38,7 +38,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.llm = build_llm(settings)
 
     def _deps() -> PipelineDeps:
-        return PipelineDeps(store=app.state.store, email=app.state.email, llm=app.state.llm)
+        return PipelineDeps(
+            store=app.state.store,
+            email=app.state.email,
+            llm=app.state.llm,
+            settings=settings,
+        )
 
     @app.get("/health")
     async def health() -> dict:
