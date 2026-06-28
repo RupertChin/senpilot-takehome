@@ -8,3 +8,4 @@ __pycache__/
 spike-artifacts/
 .ruff_cache/
 *.zip
+.playwright-mcp/

@@ -51,8 +51,9 @@ class FakeGrid:
     def _rendered(self) -> list[str]:
         return self.docs[self.start : self.start + self.window]
 
-    async def list_rows(self) -> int:
-        return len(self._rendered())
+    async def list_rows(self) -> list[int]:
+        # The real page side returns banner-clear indices; the fake's rendered rows are all clickable.
+        return list(range(len(self._rendered())))
 
     async def open_modal(self, i: int) -> list[str]:
         if i in self.open_raises_for:
@@ -131,6 +132,31 @@ async def test_collect_all_failures_returns_empty_no_hang():
     docs, failed = await grid.collect(limit=100)
     assert docs == []
     assert failed == 6
+
+
+async def test_collect_only_opens_indices_list_rows_returns():
+    # list_rows is the banner-clear filter (_clip_resident_indices on the real page). collect must
+    # only open the indices it returns — never a row that was filtered out (the overscan row behind
+    # the iwps_header banner that used to fail as modal_open_failed row=0).
+    class FilteredGrid(FakeGrid):
+        async def list_rows(self) -> list[int]:
+            # Drop index 0 every pass: it's the overscan buffer row scrolled up behind the banner.
+            return [i for i in range(len(self._rendered())) if i != 0]
+
+    grid = FilteredGrid([f"D{i}" for i in range(20)], window=8, step=4)
+    opened: list[int] = []
+    orig_open = grid.open_modal
+
+    async def tracking_open(i: int):
+        opened.append(i)
+        return await orig_open(i)
+
+    grid.open_modal = tracking_open
+    docs, failed = await grid.collect(limit=10)
+    assert 0 not in opened          # the banner-occluded index is never clicked
+    assert len(docs) == 10          # the dropped row is recollected at a clickable index next pass
+    assert failed == 0
+    assert len(set(d.doc_no for d in docs)) == 10
 
 
 # ── download_with_retries: the per-file retry + multi-file aggregation ────────

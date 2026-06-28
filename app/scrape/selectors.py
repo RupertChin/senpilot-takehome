@@ -32,9 +32,9 @@ USER_AGENT = (
 )
 
 # ── Timeouts (ms) — from spec §7.6 / the spike ───────────────────────────────
-DOWNLOAD_TIMEOUT_MS = 90_000   # default per-file budget; overridable via DOWNLOAD_TIMEOUT_S (48MB-sized)
+DOWNLOAD_TIMEOUT_MS = 90_000   # default per-file budget (start + byte transfer); overridable via DOWNLOAD_TIMEOUT_S
 MODAL_TIMEOUT_MS = 12_000      # the "Download Files" modal + its file button
-ROW_CLICK_TIMEOUT_MS = 8_000   # opening a row's modal — fail fast if a row is occluded (see below)
+ROW_CLICK_TIMEOUT_MS = 8_000   # per-row Go-Get-It click budget (rows are pre-filtered clear of the banner)
 CURTAIN_TIMEOUT_MS = 8_000     # the modality curtain clearing after a modal closes
 APP_READY_TIMEOUT_MS = 30_000  # FileMaker widgets painting after goto
 RESULTS_TIMEOUT_MS = 30_000    # the "<Type> - <N>" results signal after Search

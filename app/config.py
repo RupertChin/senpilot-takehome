@@ -78,7 +78,7 @@ class Settings(BaseSettings):
     attach_threshold_bytes: int = 18_000_000
     signed_url_ttl_hours: int = 72
     polite_delay_s: float = 0.6
-    download_timeout_s: int = 90  # per-file download budget (start + byte transfer); 48MB-sized
+    download_timeout_s: int = 90  # per-file download budget (start + byte transfer), in seconds
 
     # ── Derived, environment-driven behavior (spec §3 lower table) ────────────
     @property

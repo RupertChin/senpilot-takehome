@@ -105,7 +105,7 @@ def parse_doc_no(filenames: list[str]) -> str:
 async def collect_documents(
     *,
     limit: int,
-    list_rows: Callable[[], Awaitable[int]],
+    list_rows: Callable[[], Awaitable[list[int]]],
     open_modal: Callable[[int], Awaitable[list[str]]],
     download_doc: Callable[[int, list[str], str], Awaitable[DownloadedDoc]],
     close_modal: Callable[[], Awaitable[None]],
@@ -119,6 +119,10 @@ async def collect_documents(
     retry-then-skip accounting. Termination is keyed on **new-row progress** (a new, non-duplicate
     doc number appeared), NOT on download success — so transient download failures never end
     collection early. Returns ``(documents, failed_count)``.
+
+    ``list_rows`` returns the **indices of currently-clickable rows** (not a raw count): the page
+    side filters out virtualized overscan rows scrolled up behind the ``iwps_header`` banner, which
+    are un-clickable and always already-collected from a prior pass (see ``_clip_resident_indices``).
     """
     done: set[str] = set()
     docs: list[DownloadedDoc] = []
@@ -126,9 +130,9 @@ async def collect_documents(
     no_progress = 0
 
     while len(docs) < limit and no_progress < max_no_progress:
-        k = await list_rows()
+        indices = await list_rows()
         progressed = False
-        for i in range(k):
+        for i in indices:
             if len(docs) >= limit:
                 break
             try:
@@ -413,30 +417,64 @@ class UARBScraper:
         except Exception as exc:  # noqa: BLE001
             log.warning("scroll_error", error=_short_error(exc))
 
+    async def _clip_resident_indices(self) -> list[int]:
+        """Indices of Go-Get-It buttons whose click point is clear of the ``iwps_header`` banner.
+
+        ROOT CAUSE (measured live): the doc list is a virtualized Vaadin grid and the ``iwps_header``
+        is a ~338px-tall ``position: relative`` banner occupying the top of the page; the grid's
+        visible clip starts right below it. The grid renders an OVERSCAN buffer row above its clip, so
+        after a scroll the topmost rendered row (``nth(0)``) frequently sits with its centre ABOVE the
+        clip top — geometrically behind the banner — and ``elementFromPoint`` there returns the header.
+        A real click then hit-tests onto the banner and times out (the old intermittent
+        ``modal_open_failed row=0 cy≈333``).
+
+        The fix is selection, not recovery: we return only rows whose click point (centre) is at or
+        below the grid's top edge, i.e. clear of the banner. Such a buffer row is always already
+        collected from a prior pass (it was in the clip before it scrolled up), so skipping it loses
+        nothing; the dedupe-by-doc-no loop and the unchanged scroll step still reach every document.
+        Bottom-overscan / off-screen rows are KEPT — Playwright auto-scrolls those into view fine
+        (they were never the failure). If geometry can't be read, fall back to all rendered indices.
+        """
+        try:
+            indices = await self.page.evaluate(
+                """() => {
+                    const grid = document.querySelector('.v-grid')
+                        || document.querySelector('.v-panel-content');
+                    if (!grid) return null;
+                    const gTop = grid.getBoundingClientRect().top;
+                    const btns = [...document.querySelectorAll('button')]
+                        .filter(b => /Go Get It/i.test(b.textContent || ''));
+                    const out = [];
+                    btns.forEach((b, i) => {
+                        const r = b.getBoundingClientRect();
+                        if (r.height === 0) return;            // not rendered
+                        const cy = r.top + r.height / 2;
+                        if (cy >= gTop) out.push(i);           // click point clear of the banner
+                    });
+                    return out;
+                }"""
+            )
+        except Exception:  # noqa: BLE001 — geometry read failed; fall back below
+            indices = None
+        if indices is None:
+            n = await self.page.get_by_role("button", name="Go Get It", exact=False).count()
+            return list(range(n))
+        return indices
+
     async def _open_download_modal(self, gg_index: int) -> list[str]:
         """Click a Go-Get-It button and return the file-button labels once the modal is actionable.
 
-        After a virtualized-grid scroll the top rows can sit UNDER the sticky FileMaker header
-        (``iwps_header``), which intercepts the pointer event. We first center the row clear of the
-        header (``scrollIntoView({block:'center'})``) and try a real click with a short timeout; if
-        the row is still occluded (the virtualization can re-render it back under the header), we
-        fall back to dispatching the click straight to the button element via JS — the header can't
-        intercept a JS ``el.click()`` — so the modal opens without the doc being lost or the loop
-        stalling on hit-testing.
+        ``gg_index`` is one of the banner-clear indices from ``_clip_resident_indices`` (the caller
+        never passes a row whose click point is behind the ``iwps_header`` banner — that was the old
+        intermittent ``modal_open_failed row=0``), so a plain real click is all that's needed. A click
+        timeout simply propagates and the caller skips that row (recovered on a later scroll pass).
+
+        NB: a synthetic JS click (``el.click()``) does NOT work here — it leaves the modal closed
+        (validated live: 0/10 downloaded). Vaadin's GWT button needs a genuine browser pointer event,
+        so we always use a real ``Locator.click``.
         """
-        gg = self.page.get_by_role("button", name="Go Get It", exact=False)
-        target = gg.nth(gg_index)
-        try:
-            await target.evaluate("el => el.scrollIntoView({block: 'center', inline: 'nearest'})")
-        except Exception:  # noqa: BLE001 — best-effort; the click still auto-waits/retries
-            pass
-        try:
-            await target.click(timeout=selectors.ROW_CLICK_TIMEOUT_MS)
-        except PWTimeout:
-            # Occluded by the sticky header — dispatch the click directly to the element, bypassing
-            # pointer hit-testing (Vaadin's buttons are real <button>s that respond to a JS click).
-            log.info("row_click_via_js", row=gg_index)
-            await target.evaluate("el => el.click()")
+        target = self.page.get_by_role("button", name="Go Get It", exact=False).nth(gg_index)
+        await target.click(timeout=selectors.ROW_CLICK_TIMEOUT_MS)
         modal = self.page.locator(".v-window")
         await modal.wait_for(state="visible", timeout=selectors.MODAL_TIMEOUT_MS)
         file_btn = modal.get_by_role("button", name=selectors.FILE_BUTTON_RE)
@@ -547,8 +585,8 @@ class UARBScraper:
         # the pipeline (Stage 6) is responsible for best-effort cleanup of a partial scrape.
         tmp_dir = Path(tempfile.mkdtemp(prefix="uarb_"))
 
-        async def _list_rows() -> int:
-            return await self.page.get_by_role("button", name="Go Get It", exact=False).count()
+        async def _list_rows() -> list[int]:
+            return await self._clip_resident_indices()
 
         async def _download(idx: int, names: list[str], doc_no: str) -> DownloadedDoc:
             return await self._download_doc(idx, names, doc_no, tmp_dir)
