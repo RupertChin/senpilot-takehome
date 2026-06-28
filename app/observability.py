@@ -92,7 +92,9 @@ def job_context(job_id: str):
 def init_sentry(settings: Settings | None = None) -> None:
     """Initialize Sentry if a DSN is configured. No-op otherwise (and on import failure)."""
     settings = settings or get_settings()
-    if not settings.sentry_dsn:
+    # Require a real DSN. Guards against an empty value, whitespace, or an inline ``.env`` comment
+    # accidentally parsed as the value (a real Sentry DSN is a URL).
+    if not settings.sentry_dsn or "://" not in settings.sentry_dsn:
         return
     try:
         import sentry_sdk

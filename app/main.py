@@ -10,6 +10,7 @@ Dependencies (store, email client, llm) live on ``app.state`` so tests can overr
 
 from __future__ import annotations
 
+import json
 import uuid
 from datetime import datetime, timezone
 
@@ -51,11 +52,29 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.post("/inbound")
     async def inbound(request: Request) -> Response:
-        # TODO(Stage 11): verify the AgentMail webhook signature; reject 401 if invalid.
+        # Verify the AgentMail webhook signature on the RAW body (the one case that 401s, not 200s).
+        # FileEmailClient's default verify is a no-op locally.
+        raw_body = await request.body()
+        signature = request.headers.get("x-agentmail-signature")
+        if not app.state.email.verify_signature(raw_body, signature):
+            log.warning("inbound_bad_signature")
+            return Response(status_code=401)
         try:
-            raw = await request.json()
+            raw = json.loads(raw_body or b"{}")
+        except Exception:  # noqa: BLE001 — malformed body is a client error
+            log.warning("inbound_parse_failed", exc_info=True)
+            return Response(status_code=400)
+
+        # Only process inbound mail. Acknowledge (200) other AgentMail events (sent/delivered/
+        # bounced/…) without treating their `message` block as a new inbound request.
+        event_type = raw.get("event_type")
+        if event_type and event_type != "message.received":
+            log.info("inbound_event_ignored", event_type=event_type)
+            return Response(status_code=200)
+
+        try:
             email = await app.state.email.parse_inbound(raw)
-        except Exception:  # noqa: BLE001 — malformed/unparseable body is a client error
+        except Exception:  # noqa: BLE001 — malformed/unparseable payload is a client error
             log.warning("inbound_parse_failed", exc_info=True)
             return Response(status_code=400)
 

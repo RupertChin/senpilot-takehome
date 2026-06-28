@@ -94,3 +94,26 @@ def test_inbound_malformed_payload_returns_400(client):
 def test_process_malformed_payload_returns_400(client):
     r = client.post("/process", json={"not_message_id": "x"})
     assert r.status_code == 400
+
+
+def test_inbound_bad_signature_returns_401(client):
+    # Swap in an email client that rejects the signature (the one case /inbound 401s, not 200s).
+    class _RejectingEmail:
+        def verify_signature(self, raw_body, signature):
+            return False
+
+        async def parse_inbound(self, raw):  # pragma: no cover — never reached on a 401
+            raise AssertionError("parse must not run when the signature is rejected")
+
+    client.app.state.email = _RejectingEmail()
+    r = client.post("/inbound", json=_inbound_payload(), headers={"x-agentmail-signature": "bad"})
+    assert r.status_code == 401
+    # No job was claimed (we rejected before processing).
+    assert len(client.app.state.store._jobs) == 0
+
+
+def test_inbound_ignores_non_received_event(client):
+    # A non-message.received AgentMail event is acknowledged (200) but not processed.
+    r = client.post("/inbound", json={"event_type": "message.sent", "message": {"message_id": "x"}})
+    assert r.status_code == 200
+    assert len(client.app.state.store._jobs) == 0

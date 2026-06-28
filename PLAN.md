@@ -175,5 +175,5 @@ request their specific credential.
 - [x] Stage 8 — Thread-context follow-up (real-store tests incl. two-turn e2e; 131 offline; review: no blocking)
 - [x] Stage 9 — README + conversational ack (136 offline; review: no blocking; §13 decision log complete)
 - [x] Stage 10 — SupabaseStore (MCP-provisioned project; live contract 3/3; review: no blocking)
-- [ ] Stage 11 — AgentMailClient (PAUSE: AgentMail creds)
+- [x] Stage 11 — AgentMailClient (live send+reply+attachment round-trip + signature verify; 145 offline; review: no blocking)
 - [ ] Stage 12 — Cloud Tasks + deploy (PAUSE: GCP)

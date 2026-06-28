@@ -30,3 +30,11 @@ class EmailClient(ABC):
     ) -> None:
         """Send a reply in-thread (preserving threading), optionally with one attachment."""
         ...
+
+    def verify_signature(self, raw_body: bytes, signature: str | None) -> bool:
+        """Verify an inbound webhook signature (spec §7.1).
+
+        Default: no verification (the local ``FileEmailClient`` has no signing secret). The prod
+        ``AgentMailClient`` overrides this to HMAC-verify the ``X-AgentMail-Signature`` header.
+        """
+        return True
