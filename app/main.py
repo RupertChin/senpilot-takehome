@@ -55,9 +55,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # Verify the AgentMail webhook signature on the RAW body (the one case that 401s, not 200s).
         # FileEmailClient's default verify is a no-op locally.
         raw_body = await request.body()
-        signature = request.headers.get("x-agentmail-signature")
-        if not app.state.email.verify_signature(raw_body, signature):
-            log.warning("inbound_bad_signature")
+        if not app.state.email.verify_signature(raw_body, request.headers):
+            # Log which signature headers were present (names only) to disambiguate a scheme/secret
+            # mismatch from missing headers — never log the values.
+            sig_headers = [
+                h for h in ("svix-id", "svix-timestamp", "svix-signature",
+                            "webhook-id", "webhook-timestamp", "webhook-signature")
+                if h in request.headers
+            ]
+            log.warning("inbound_bad_signature", sig_headers_present=sig_headers)
             return Response(status_code=401)
         try:
             raw = json.loads(raw_body or b"{}")

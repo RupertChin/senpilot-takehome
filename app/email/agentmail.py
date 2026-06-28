@@ -13,6 +13,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+from collections.abc import Mapping
 from email.utils import parseaddr
 from pathlib import Path
 
@@ -34,6 +35,39 @@ def _addr(value) -> str:
     return parseaddr(value or "")[1] or (value or "")
 
 
+def svix_verify(secret: str, headers: Mapping[str, str], raw_body: bytes) -> bool:
+    """Verify an AgentMail webhook signature using the Svix scheme. Pure + fail-closed.
+
+    AgentMail signs webhooks with Svix (the SDK ships ``SvixId``/``SvixSignature``/``SvixTimestamp``
+    types — that's the source of truth, not the simplified ``X-AgentMail-Signature`` hex-HMAC in the
+    written docs, which never matched live traffic). The scheme:
+
+      signed = f"{svix-id}.{svix-timestamp}.{raw_body}"
+      expected = base64( HMAC_SHA256( base64decode(secret without 'whsec_'), signed ) )
+
+    The ``svix-signature`` header is a space-separated list of ``v1,<sig>`` entries; any match passes.
+    Header names are checked under both the ``svix-`` and the unbranded ``webhook-`` prefixes.
+    """
+    g = headers.get
+    msg_id = g("svix-id") or g("webhook-id")
+    timestamp = g("svix-timestamp") or g("webhook-timestamp")
+    sig_header = g("svix-signature") or g("webhook-signature")
+    if not (msg_id and timestamp and sig_header):
+        return False
+    key_b64 = secret.split("_", 1)[1] if secret.startswith("whsec_") else secret
+    try:
+        key = base64.b64decode(key_b64)
+    except Exception:  # noqa: BLE001 — a malformed secret is a config error → fail closed
+        return False
+    signed = msg_id.encode() + b"." + timestamp.encode() + b"." + raw_body
+    expected = base64.b64encode(hmac.new(key, signed, hashlib.sha256).digest()).decode()
+    for part in sig_header.split():
+        candidate = part.split(",", 1)[1] if "," in part else part
+        if hmac.compare_digest(candidate, expected):
+            return True
+    return False
+
+
 class AgentMailClient(EmailClient):
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
@@ -42,17 +76,12 @@ class AgentMailClient(EmailClient):
         self.client = AsyncAgentMail(api_key=settings.agentmail_api_key)
 
     # ── signature verification (spec §7.1) ────────────────────────────────────
-    def verify_signature(self, raw_body: bytes, signature: str | None) -> bool:
-        """HMAC-SHA256(raw_body, secret) == X-AgentMail-Signature. Fail closed on anything odd."""
+    def verify_signature(self, raw_body: bytes, headers: Mapping[str, str]) -> bool:
+        """Verify the inbound webhook's Svix signature from its headers. Fail closed on anything odd."""
         if not self.webhook_secret:
             log.warning("agentmail_webhook_secret_unset")
             return False  # fail closed — a prod inbox must configure the secret
-        if not isinstance(signature, str) or not signature:
-            return False
-        expected = hmac.new(
-            self.webhook_secret.encode(), raw_body, hashlib.sha256
-        ).hexdigest()
-        return hmac.compare_digest(expected, signature)
+        return svix_verify(self.webhook_secret, headers, raw_body)
 
     # ── inbound parse (spec §7.3) ─────────────────────────────────────────────
     async def parse_inbound(self, raw: dict) -> InboundEmail:

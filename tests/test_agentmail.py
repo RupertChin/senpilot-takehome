@@ -69,31 +69,51 @@ async def test_parse_inbound_tolerates_bare_message():
     assert email.message_id == "msg_1"
 
 
-# ── signature verification ────────────────────────────────────────────────────
+# ── signature verification (Svix scheme — AgentMail's real webhook signing) ─────
+
+# A valid base64 secret with the whsec_ prefix, as AgentMail/Svix issue them.
+_SECRET = "whsec_" + base64.b64encode(b"0123456789abcdef0123456789abcdef").decode()
 
 
-def test_verify_signature_accepts_valid_hmac():
-    client = AgentMailClient(_settings(secret="s3cr3t"))
-    body = b'{"event":"x"}'
-    sig = hmac.new(b"s3cr3t", body, hashlib.sha256).hexdigest()
-    assert client.verify_signature(body, sig) is True
+def _svix_headers(secret: str, body: bytes, msg_id: str = "msg_1", ts: str = "1700000000") -> dict:
+    """Build the Svix headers (svix-id/timestamp/signature) for a body, like AgentMail sends."""
+    key = base64.b64decode(secret.split("_", 1)[1] if secret.startswith("whsec_") else secret)
+    signed = msg_id.encode() + b"." + ts.encode() + b"." + body
+    sig = base64.b64encode(hmac.new(key, signed, hashlib.sha256).digest()).decode()
+    return {"svix-id": msg_id, "svix-timestamp": ts, "svix-signature": f"v1,{sig}"}
 
 
-def test_verify_signature_rejects_bad_and_missing():
-    client = AgentMailClient(_settings(secret="s3cr3t"))
-    body = b'{"event":"x"}'
-    assert client.verify_signature(body, "deadbeef") is False
-    assert client.verify_signature(body, None) is False
-    assert client.verify_signature(body, "") is False
-    # tamper with the body -> signature no longer matches
-    sig = hmac.new(b"s3cr3t", body, hashlib.sha256).hexdigest()
-    assert client.verify_signature(b'{"event":"y"}', sig) is False
+def test_verify_signature_accepts_valid_svix():
+    client = AgentMailClient(_settings(secret=_SECRET))
+    body = b'{"event_type":"message.received"}'
+    assert client.verify_signature(body, _svix_headers(_SECRET, body)) is True
+
+
+def test_verify_signature_accepts_one_of_multiple_signatures():
+    # The svix-signature header is a space-separated list; any valid v1 entry passes.
+    client = AgentMailClient(_settings(secret=_SECRET))
+    body = b'{"event_type":"message.received"}'
+    good = _svix_headers(_SECRET, body)
+    good["svix-signature"] = "v1,not-the-one " + good["svix-signature"]
+    assert client.verify_signature(body, good) is True
+
+
+def test_verify_signature_rejects_bad_tampered_and_missing():
+    client = AgentMailClient(_settings(secret=_SECRET))
+    body = b'{"event_type":"message.received"}'
+    good = _svix_headers(_SECRET, body)
+    assert client.verify_signature(body, {}) is False  # no signature headers at all
+    bad = {**good, "svix-signature": "v1,deadbeef"}
+    assert client.verify_signature(body, bad) is False  # wrong signature
+    assert client.verify_signature(b'{"event_type":"y"}', good) is False  # tampered body
+    missing_ts = {k: v for k, v in good.items() if k != "svix-timestamp"}
+    assert client.verify_signature(body, missing_ts) is False  # incomplete headers
 
 
 def test_verify_signature_fails_closed_without_secret():
     client = AgentMailClient(_settings(secret=""))
     body = b"x"
-    assert client.verify_signature(body, "anything") is False
+    assert client.verify_signature(body, _svix_headers(_SECRET, body)) is False
 
 
 # ── reply with attachment (mocked client) ─────────────────────────────────────
@@ -184,6 +204,6 @@ def test_live_signature_with_real_secret():
         pytest.skip("AGENTMAIL_WEBHOOK_SECRET not set")
     client = AgentMailClient(settings)
     body = b'{"event_type":"message.received"}'
-    sig = hmac.new(settings.agentmail_webhook_secret.encode(), body, hashlib.sha256).hexdigest()
-    assert client.verify_signature(body, sig) is True
-    assert client.verify_signature(body, "bad") is False
+    headers = _svix_headers(settings.agentmail_webhook_secret, body)
+    assert client.verify_signature(body, headers) is True
+    assert client.verify_signature(body, {**headers, "svix-signature": "v1,bad"}) is False

@@ -99,7 +99,7 @@ def test_process_malformed_payload_returns_400(client):
 def test_inbound_bad_signature_returns_401(client):
     # Swap in an email client that rejects the signature (the one case /inbound 401s, not 200s).
     class _RejectingEmail:
-        def verify_signature(self, raw_body, signature):
+        def verify_signature(self, raw_body, headers):
             return False
 
         async def parse_inbound(self, raw):  # pragma: no cover — never reached on a 401
