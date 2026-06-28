@@ -172,7 +172,7 @@ request their specific credential.
 - [x] Stage 6 — Pipeline inline happy path (live §12 e2e PASS: reply+ZIP in outbox; 118 offline; review: no blocking)
 - [x] Stage 7 — Packager + robustness (live §12 re-validated; 123 offline; review: no blocking)
 - [x] Stage 8 — Thread-context follow-up (real-store tests incl. two-turn e2e; 131 offline; review: no blocking)
-- [ ] Stage 9 — README + conversational ack
+- [x] Stage 9 — README + conversational ack (136 offline; review: no blocking; §13 decision log complete)
 - [ ] Stage 10 — SupabaseStore (PAUSE: Supabase creds)
 - [ ] Stage 11 — AgentMailClient (PAUSE: AgentMail creds)
 - [ ] Stage 12 — Cloud Tasks + deploy (PAUSE: GCP)

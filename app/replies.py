@@ -12,6 +12,14 @@ from app.models import DocCounts, DocumentType
 _DOC_TYPE_LIST = "Exhibits, Key Documents, Other Documents, Transcripts, or Recordings"
 
 
+def conversational_ack() -> str:
+    """A one-line friendly ack for a clear thanks/greeting (spec §4 — cut-order flex)."""
+    return (
+        "Happy to help! Whenever you need documents, send me a matter number (like M12205) "
+        f"and a document type — {_DOC_TYPE_LIST}."
+    )
+
+
 def clarification(missing_matter: bool, missing_type: bool) -> str:
     """Missing matter and/or document type (§5 — combine when both are missing)."""
     parts: list[str] = []

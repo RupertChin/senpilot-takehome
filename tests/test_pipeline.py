@@ -116,10 +116,12 @@ async def test_junk_is_silently_dropped(tmp_path):
     assert (await deps.store.load_job("m-1")).status == "done"
 
 
-async def test_conversational_is_dropped(tmp_path):
+async def test_conversational_gets_one_line_ack(tmp_path):
     deps = _deps(tmp_path, FakeLLM(label="conversational"))
     await _run(deps, _inbound(body="thanks!"))
-    assert _outbox_eml(tmp_path) is None
+    body = _outbox_eml(tmp_path)
+    assert body is not None and "Happy to help!" in body
+    assert (await deps.store.load_job("m-1")).status == "done"
 
 
 # ── clarification branches ────────────────────────────────────────────────────

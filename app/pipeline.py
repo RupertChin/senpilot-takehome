@@ -8,7 +8,8 @@ Error taxonomy (§9): user errors are the friendly terminal replies (clarificati
 empty-type) handled inline. An infrastructure/transient failure is classified — in ``tasks`` mode
 it re-raises so ``/process`` returns 5xx and Cloud Tasks retries; in ``inline`` mode (no queue) it
 sends the §5 failure email once (unless a reply already went out) and marks the job failed. A
-``finally`` removes the per-job temp files. Thread-context inheritance lands in Stage 8.
+``finally`` removes the per-job temp files. Thread-context inheritance (§7.9) merges on extract and
+upserts after a successful scrape.
 """
 
 from __future__ import annotations
@@ -25,7 +26,7 @@ from app.llm.base import LLM
 from app.models import DocCounts, ParsedRequest, ThreadContext
 from app.observability import get_logger, init_sentry, job_context
 from app.package.packager import package
-from app.replies import clarification, empty_type, failure, matter_not_found
+from app.replies import clarification, conversational_ack, empty_type, failure, matter_not_found
 from app.scrape.scraper import scrape_matter
 from app.store.base import Store
 
@@ -72,8 +73,10 @@ async def process_job(message_id: str, *, deps: PipelineDeps) -> None:
                 await deps.store.set_status(job.job_id, "done")
                 return
             if label == "conversational":
-                # A one-line ack is the cut-order flex (Stage 9). For now: no reply, mark done.
+                # A one-line friendly ack for a clear thanks/greeting (§4).
                 log.info("classified_conversational", message_id=message_id)
+                await _reply(deps, inbound, conversational_ack())
+                outbound_sent = True
                 await deps.store.set_status(job.job_id, "done")
                 return
 
